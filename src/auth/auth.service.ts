@@ -8,19 +8,10 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import type {
-  Credential,
-  OrganizationMembership,
-  Role,
-  User,
-} from '@prisma/client';
+import type { Credential, OrganizationMembership, User } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { serializeResponse } from '../common/utils/response';
-import type {
-  LoginInput,
-  RefreshInput,
-  RegisterInput,
-} from './auth.schemas';
+import type { LoginInput, RefreshInput, RegisterInput } from './auth.schemas';
 import type { JwtMembership, JwtUser } from './interfaces/jwt-user.interface';
 import { PasswordService } from './password.service';
 import type { AppEnv } from '../config/env';
@@ -71,20 +62,20 @@ export class AuthService {
         throw new ConflictException('Organization slug is already in use');
       }
 
-        const result = await this.prisma.$transaction(async (tx) => {
-          const user = await tx.user.create({
-            data: {
-              email: dto.email,
-              firstName: dto.firstName,
-              lastName: dto.lastName,
-              displayName: dto.displayName,
-              type: 'ORGANIZATION',
-              role: 'MANAGER',
-              profile: {
-                create: {},
-              },
+      const result = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.create({
+          data: {
+            email: dto.email,
+            firstName: dto.firstName,
+            lastName: dto.lastName,
+            displayName: dto.displayName,
+            type: 'ORGANIZATION',
+            role: 'MANAGER',
+            profile: {
+              create: {},
             },
-          });
+          },
+        });
 
         const organization = await tx.organization.create({
           data: {
@@ -260,7 +251,11 @@ export class AuthService {
       );
     }
 
-    if (loginType === 'MEMBER' && user.role === 'SUPER_ADMIN' && user.type !== 'MEMBER') {
+    if (
+      loginType === 'MEMBER' &&
+      user.role === 'SUPER_ADMIN' &&
+      user.type !== 'MEMBER'
+    ) {
       throw new UnauthorizedException(
         'Super admin accounts must use the organization login flow',
       );
@@ -306,7 +301,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       type: user.type,
-      role: user.role as Role,
+      role: user.role,
       currentOrganizationId: user.currentOrganizationId,
       memberships,
     };
@@ -315,7 +310,7 @@ export class AuthService {
       secret: this.configService.getOrThrow('JWT_SECRET', { infer: true }),
       expiresIn: this.configService.getOrThrow('JWT_EXPIRES_IN', {
         infer: true,
-      }) as never,
+      }),
     });
 
     const refreshToken = await this.jwtService.signAsync(
@@ -326,7 +321,7 @@ export class AuthService {
         }),
         expiresIn: this.configService.getOrThrow('JWT_REFRESH_EXPIRES_IN', {
           infer: true,
-        }) as never,
+        }),
       },
     );
 

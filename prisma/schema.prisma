@@ -276,16 +276,19 @@ model OrganizationMembership {
 }
 
 model JoinRequest {
-  id             String            @id @default(cuid())
-  organizationId String
-  requesterId    String
-  recipientId    String?
-  type           JoinRequestType
-  status         JoinRequestStatus @default(PENDING)
-  message        String?
-  respondedAt    DateTime?
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
+  id              String            @id @default(cuid())
+  organizationId  String
+  requesterId     String
+  recipientId     String?
+  type            JoinRequestType
+  status          JoinRequestStatus @default(PENDING)
+  message         String?
+  invitationToken String?           @unique
+  invitationEmail String?
+  expiresAt       DateTime?
+  respondedAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   requester    User         @relation("JoinRequestSender", fields: [requesterId], references: [id], onDelete: Cascade)
@@ -294,6 +297,7 @@ model JoinRequest {
   @@index([organizationId, status, type])
   @@index([requesterId, status])
   @@index([recipientId, status])
+  @@index([invitationEmail, status])
 }
 
 model Team {
@@ -352,6 +356,7 @@ model Project {
   owner        User            @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
   members      ProjectMember[]
   tasks        Task[]
+  attachments  Attachment[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
@@ -428,6 +433,7 @@ model Attachment {
   entityType   AttachmentEntityType
   taskId       String?
   commentId    String?
+  projectId    String?
   uploadedById String
   fileName     String
   fileUrl      String
@@ -438,10 +444,12 @@ model Attachment {
 
   task       Task?    @relation(fields: [taskId], references: [id], onDelete: Cascade)
   comment    Comment? @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
   uploadedBy User     @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
 
   @@index([taskId])
   @@index([commentId])
+  @@index([projectId])
   @@index([uploadedById])
 }
 

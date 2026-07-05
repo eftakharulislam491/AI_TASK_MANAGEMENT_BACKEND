@@ -4,7 +4,10 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { ActivityModule } from './activity/activity.module';
+import { AttachmentsModule } from './attachments/attachments.module';
 import { AuthModule } from './auth/auth.module';
+import { CommentsModule } from './comments/comments.module';
 import { validateEnv } from './config/env';
 import { PrismaModule } from './prisma/prisma.module';
 import { LoggerMiddleware } from './common/middleware/logger.middleware';
@@ -12,7 +15,11 @@ import { TenantContextMiddleware } from './common/middleware/tenant-context.midd
 import { RolesGuard } from './common/guards/roles.guard';
 import { TenantAccessGuard } from './common/guards/tenant-access.guard';
 import { HealthModule } from './health/health.module';
+import { InvitationsModule } from './invitations/invitations.module';
 import { MailModule } from './mail/mail.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { ProjectsModule } from './projects/projects.module';
+import { TasksModule } from './tasks/tasks.module';
 import { TeamsModule } from './teams/teams.module';
 import { UsersModule } from './users/users.module';
 
@@ -42,8 +49,15 @@ import { UsersModule } from './users/users.module';
     ]),
     PrismaModule,
     AuthModule,
+    ActivityModule,
+    AttachmentsModule,
+    CommentsModule,
     HealthModule,
+    InvitationsModule,
     MailModule,
+    NotificationsModule,
+    ProjectsModule,
+    TasksModule,
     TeamsModule,
     UsersModule,
   ],

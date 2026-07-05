@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+  <body style="margin:0;background:#f6f7fb;color:#111827;font-family:Arial,sans-serif">
+    <span style="display:none">Overdue task: <%= taskTitle %></span>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 16px">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px">
+            <tr>
+              <td style="padding:32px">
+                <h1 style="font-size:24px;line-height:32px;margin:0 0 16px">Task overdue</h1>
+                <p style="font-size:15px;line-height:24px;color:#374151;margin:0 0 12px">This task is past its deadline and needs attention.</p>
+                <p style="font-size:16px;line-height:24px;color:#111827;margin:0 0 12px"><strong><%= taskTitle %></strong></p>
+                <% if (deadline) { %>
+                  <p style="font-size:14px;line-height:22px;color:#6b7280;margin:0 0 20px">Original deadline: <%= deadline %></p>
+                <% } %>
+                <% if (taskUrl) { %>
+                  <p style="margin:28px 0">
+                    <a href="<%= taskUrl %>" style="background:#dc2626;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px;display:inline-block;font-weight:700">Open task</a>
+                  </p>
+                <% } %>
+                <p style="font-size:12px;line-height:18px;color:#6b7280;margin-top:28px"><%= appName %> notification</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

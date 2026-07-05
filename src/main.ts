@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
+import type { Server } from 'node:http';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { ZodExceptionFilter } from './common/filters/zod-exception.filter';
@@ -40,17 +41,12 @@ async function bootstrap() {
   app.useGlobalInterceptors(new ResponseInterceptor());
 
   const prismaService = app.get(PrismaService);
-  await prismaService.enableShutdownHooks(app);
+  prismaService.enableShutdownHooks(app);
 
-  const server = await app.listen(port);
+  const server = (await app.listen(port)) as Server;
 
-  process.on('SIGTERM', async () => {
-    console.log('[TaskFlow] SIGTERM received. Shutting down gracefully...');
-    server.close(() => {
-      console.log('[TaskFlow] HTTP server closed.');
-    });
-    await app.close();
-    process.exit(0);
+  process.on('SIGTERM', () => {
+    void shutdown(server, async () => app.close());
   });
 
   const appUrl = await app.getUrl();
@@ -58,4 +54,14 @@ async function bootstrap() {
   console.log(`[TaskFlow] Running on: ${appUrl}/api/v1`);
   console.log(`[TaskFlow] Environment: ${nodeEnv}`);
 }
-bootstrap();
+
+async function shutdown(server: Server, closeApp: () => Promise<void>) {
+  console.log('[TaskFlow] SIGTERM received. Shutting down gracefully...');
+  server.close(() => {
+    console.log('[TaskFlow] HTTP server closed.');
+  });
+  await closeApp();
+  process.exit(0);
+}
+
+void bootstrap();

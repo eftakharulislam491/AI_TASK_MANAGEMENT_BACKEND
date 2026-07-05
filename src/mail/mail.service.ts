@@ -1,6 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { renderFile } from 'ejs';
 import nodemailer, { type Transporter } from 'nodemailer';
+import { join } from 'node:path';
 import type { AppEnv } from '../config/env';
 
 type InvitationEmailInput = {
@@ -9,6 +11,7 @@ type InvitationEmailInput = {
   inviteUrl: string;
   inviterName?: string;
   message?: string;
+  expiresAt?: Date;
 };
 
 type TaskEmailInput = {
@@ -18,6 +21,12 @@ type TaskEmailInput = {
   assigneeName?: string;
   deadline?: Date | string | null;
 };
+
+type TemplateName =
+  | 'invitation'
+  | 'task-assigned'
+  | 'deadline-reminder'
+  | 'overdue-task';
 
 @Injectable()
 export class MailService {
@@ -31,18 +40,15 @@ export class MailService {
     await this.sendMail({
       to: input.to,
       subject: `Invitation to join ${input.organizationName}`,
-      html: this.wrapTemplate({
-        title: `Join ${input.organizationName}`,
-        preview: input.inviterName
-          ? `${input.inviterName} invited you to collaborate.`
-          : 'You have been invited to collaborate.',
-        body: `
-          <p>You have been invited to join <strong>${this.escapeHtml(input.organizationName)}</strong>.</p>
-          ${input.message ? `<p>${this.escapeHtml(input.message)}</p>` : ''}
-          <p>Accept the invitation to start working with your team.</p>
-        `,
-        ctaLabel: 'Accept invitation',
-        ctaUrl: input.inviteUrl,
+      html: await this.renderTemplate('invitation', {
+        organizationName: input.organizationName,
+        inviteUrl: input.inviteUrl,
+        inviterName: input.inviterName,
+        message: input.message,
+        expiresAt: input.expiresAt
+          ? this.formatDate(input.expiresAt)
+          : undefined,
+        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -51,15 +57,11 @@ export class MailService {
     await this.sendMail({
       to: input.to,
       subject: `Task assigned: ${input.taskTitle}`,
-      html: this.wrapTemplate({
-        title: 'New task assigned',
-        preview: input.taskTitle,
-        body: `
-          <p>${input.assigneeName ? `${this.escapeHtml(input.assigneeName)}, you` : 'You'} have been assigned a new task.</p>
-          <p><strong>${this.escapeHtml(input.taskTitle)}</strong></p>
-        `,
-        ctaLabel: input.taskUrl ? 'View task' : undefined,
-        ctaUrl: input.taskUrl,
+      html: await this.renderTemplate('task-assigned', {
+        taskTitle: input.taskTitle,
+        taskUrl: input.taskUrl,
+        assigneeName: input.assigneeName,
+        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -68,16 +70,11 @@ export class MailService {
     await this.sendMail({
       to: input.to,
       subject: `Deadline reminder: ${input.taskTitle}`,
-      html: this.wrapTemplate({
-        title: 'Deadline reminder',
-        preview: input.taskTitle,
-        body: `
-          <p>This task is approaching its deadline.</p>
-          <p><strong>${this.escapeHtml(input.taskTitle)}</strong></p>
-          ${input.deadline ? `<p>Deadline: ${this.escapeHtml(this.formatDate(input.deadline))}</p>` : ''}
-        `,
-        ctaLabel: input.taskUrl ? 'Review task' : undefined,
-        ctaUrl: input.taskUrl,
+      html: await this.renderTemplate('deadline-reminder', {
+        taskTitle: input.taskTitle,
+        taskUrl: input.taskUrl,
+        deadline: input.deadline ? this.formatDate(input.deadline) : undefined,
+        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -86,16 +83,11 @@ export class MailService {
     await this.sendMail({
       to: input.to,
       subject: `Overdue task: ${input.taskTitle}`,
-      html: this.wrapTemplate({
-        title: 'Task overdue',
-        preview: input.taskTitle,
-        body: `
-          <p>This task is past its deadline and needs attention.</p>
-          <p><strong>${this.escapeHtml(input.taskTitle)}</strong></p>
-          ${input.deadline ? `<p>Original deadline: ${this.escapeHtml(this.formatDate(input.deadline))}</p>` : ''}
-        `,
-        ctaLabel: input.taskUrl ? 'Open task' : undefined,
-        ctaUrl: input.taskUrl,
+      html: await this.renderTemplate('overdue-task', {
+        taskTitle: input.taskTitle,
+        taskUrl: input.taskUrl,
+        deadline: input.deadline ? this.formatDate(input.deadline) : undefined,
+        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -133,11 +125,7 @@ export class MailService {
     return this.transporter;
   }
 
-  private async sendMail(input: {
-    to: string;
-    subject: string;
-    html: string;
-  }) {
+  private async sendMail(input: { to: string; subject: string; html: string }) {
     const transporter = this.getTransporter();
 
     if (!transporter) {
@@ -164,54 +152,25 @@ export class MailService {
     return email ? `"${name}" <${email}>` : name;
   }
 
-  private wrapTemplate(input: {
-    title: string;
-    preview: string;
-    body: string;
-    ctaLabel?: string;
-    ctaUrl?: string;
-  }) {
-    const cta =
-      input.ctaLabel && input.ctaUrl
-        ? `<p style="margin:28px 0"><a href="${this.escapeHtml(input.ctaUrl)}" style="background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:6px;display:inline-block;font-weight:700">${this.escapeHtml(input.ctaLabel)}</a></p>`
-        : '';
+  private async renderTemplate(
+    templateName: TemplateName,
+    data: Record<string, unknown>,
+  ) {
+    const filePath = join(__dirname, 'templates', `${templateName}.ejs`);
 
-    return `
-      <!doctype html>
-      <html>
-        <body style="margin:0;background:#f6f7fb;color:#111827;font-family:Arial,sans-serif">
-          <span style="display:none">${this.escapeHtml(input.preview)}</span>
-          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="padding:32px 16px">
-            <tr>
-              <td align="center">
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px">
-                  <tr>
-                    <td style="padding:32px">
-                      <h1 style="font-size:24px;line-height:32px;margin:0 0 16px">${this.escapeHtml(input.title)}</h1>
-                      <div style="font-size:15px;line-height:24px;color:#374151">${input.body}</div>
-                      ${cta}
-                      <p style="font-size:12px;line-height:18px;color:#6b7280;margin-top:28px">TaskFlow notification</p>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-          </table>
-        </body>
-      </html>
-    `;
+    return new Promise<string>((resolve, reject) => {
+      renderFile(filePath, data, (error, html) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(html);
+      });
+    });
   }
 
   private formatDate(value: Date | string) {
     return new Date(value).toLocaleString();
-  }
-
-  private escapeHtml(value: string) {
-    return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
   }
 }

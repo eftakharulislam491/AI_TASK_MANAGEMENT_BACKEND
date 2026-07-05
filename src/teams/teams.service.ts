@@ -167,7 +167,11 @@ export class TeamsService {
 
   async getTeam(currentUser: JwtUser, teamId: string) {
     const organizationId = this.getOrganizationId(currentUser);
-    const team = await this.getTeamOrThrow(organizationId, teamId, teamDetailSelect);
+    const team = await this.getTeamOrThrow(
+      organizationId,
+      teamId,
+      teamDetailSelect,
+    );
 
     return serializeResponse(this.mapTeamDetail(team));
   }
@@ -298,11 +302,7 @@ export class TeamsService {
     return this.getTeamMembers(teamId);
   }
 
-  async removeTeamMember(
-    currentUser: JwtUser,
-    teamId: string,
-    userId: string,
-  ) {
+  async removeTeamMember(currentUser: JwtUser, teamId: string, userId: string) {
     const organizationId = this.getOrganizationId(currentUser);
     const team = await this.getTeamOrThrow(organizationId, teamId, {
       id: true,
@@ -431,7 +431,9 @@ export class TeamsService {
     });
 
     if (existing && existing.id !== ignoredTeamId) {
-      throw new ConflictException('Team slug is already used in this organization.');
+      throw new ConflictException(
+        'Team slug is already used in this organization.',
+      );
     }
   }
 
@@ -474,7 +476,7 @@ export class TeamsService {
       throw new NotFoundException('Team not found.');
     }
 
-    return team as Prisma.TeamGetPayload<{ select: T }>;
+    return team;
   }
 
   private mapTeamListItem(team: TeamListRow) {

@@ -18,13 +18,13 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
         signOptions: {
           expiresIn: configService.getOrThrow('JWT_EXPIRES_IN', {
             infer: true,
-          }) as never,
+          }),
         },
       }),
     }),
   ],
   controllers: [AuthController],
   providers: [AuthService, PasswordService, JwtAuthGuard],
-  exports: [AuthService, JwtAuthGuard, JwtModule],
+  exports: [AuthService, JwtAuthGuard, JwtModule, PasswordService],
 })
 export class AuthModule {}

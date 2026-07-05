@@ -50,7 +50,10 @@ export class PrismaService
     await this.$connect();
     this.logger.log('Database connected');
 
-    if (this.configService.getOrThrow('NODE_ENV', { infer: true }) === 'development') {
+    if (
+      this.configService.getOrThrow('NODE_ENV', { infer: true }) ===
+      'development'
+    ) {
       // @ts-expect-error Prisma query events are available when query logging emits events.
       this.$on('query', (event: { query: string; duration: number }) => {
         if (event.duration > 200) {
@@ -62,7 +65,7 @@ export class PrismaService
     }
   }
 
-  async enableShutdownHooks(app: INestApplication) {
+  enableShutdownHooks(app: INestApplication) {
     app.enableShutdownHooks();
   }
 

@@ -5,12 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type {
-  Prisma,
-  Role,
-  RoleChangeRequestStatus,
-  UserType,
-} from '@prisma/client';
+import type { Prisma, Role, RoleChangeRequestStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { serializeResponse } from '../common/utils/response';
 import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
@@ -90,7 +85,11 @@ const userDetailSelect = {
     },
   },
   abilities: {
-    orderBy: [{ isPrimary: 'desc' }, { proficiencyScore: 'desc' }, { name: 'asc' }],
+    orderBy: [
+      { isPrimary: 'desc' },
+      { proficiencyScore: 'desc' },
+      { name: 'asc' },
+    ],
     select: userAbilitySelect,
   },
   profile: {
@@ -164,7 +163,11 @@ const userDirectorySelect = {
   },
   abilities: {
     take: 8,
-    orderBy: [{ isPrimary: 'desc' }, { proficiencyScore: 'desc' }, { name: 'asc' }],
+    orderBy: [
+      { isPrimary: 'desc' },
+      { proficiencyScore: 'desc' },
+      { name: 'asc' },
+    ],
     select: {
       id: true,
       name: true,
@@ -290,12 +293,7 @@ export class UsersService {
   async updateMyProfile(currentUser: JwtUser, input: UpdateMyProfileInput) {
     await this.ensureProfileExists(currentUser.sub);
 
-    const {
-      firstName,
-      lastName,
-      displayName,
-      ...profileData
-    } = input;
+    const { firstName, lastName, displayName, ...profileData } = input;
     const persistedProfileData = this.toProfilePersistenceInput(profileData);
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -523,7 +521,10 @@ export class UsersService {
       actor.currentOrganizationId ??
       target.currentOrganizationId ??
       undefined;
-    const currentRole = this.resolveCurrentRoleForRequest(target, organizationId);
+    const currentRole = this.resolveCurrentRoleForRequest(
+      target,
+      organizationId,
+    );
 
     if (currentRole === input.requestedRole) {
       throw new BadRequestException(
@@ -557,17 +558,17 @@ export class UsersService {
 
     const request: RoleChangeRequestRow =
       await this.prisma.roleChangeRequest.create({
-      data: {
-        organizationId,
-        requesterId: actor.id,
-        targetUserId: target.id,
-        currentRole,
-        requestedRole: input.requestedRole,
-        reason: input.reason,
-        metadata: this.toJsonValue(input.metadata),
-      },
-      select: roleChangeRequestSelect,
-    });
+        data: {
+          organizationId,
+          requesterId: actor.id,
+          targetUserId: target.id,
+          currentRole,
+          requestedRole: input.requestedRole,
+          reason: input.reason,
+          metadata: this.toJsonValue(input.metadata),
+        },
+        select: roleChangeRequestSelect,
+      });
 
     return serializeResponse({
       success: true,
@@ -741,7 +742,7 @@ export class UsersService {
 
   private buildDirectoryWhere(actor: Actor, query: ListUsersQueryInput) {
     const role = query.role;
-    const type = query.type as UserType | undefined;
+    const type = query.type;
     const organizationId = this.resolveAccessibleOrganizationId(
       actor,
       query.organizationId,
@@ -988,7 +989,10 @@ export class UsersService {
         );
       }
 
-      if (target.id !== actor.id && ROLE_RANK[requestedRole] > ROLE_RANK.TEAM_LEADER) {
+      if (
+        target.id !== actor.id &&
+        ROLE_RANK[requestedRole] > ROLE_RANK.TEAM_LEADER
+      ) {
         throw new ForbiddenException(
           'Team leaders cannot request a higher role for another user.',
         );
@@ -1002,7 +1006,6 @@ export class UsersService {
         'Members can only create role change requests for themselves.',
       );
     }
-
   }
 
   private buildRoleChangeRequestWhere(
@@ -1121,7 +1124,10 @@ export class UsersService {
       );
     }
 
-    if (!request.organizationId || actor.currentOrganizationId !== request.organizationId) {
+    if (
+      !request.organizationId ||
+      actor.currentOrganizationId !== request.organizationId
+    ) {
       throw new ForbiddenException(
         'Managers can only review requests for their current organization.',
       );
@@ -1197,7 +1203,7 @@ export class UsersService {
           role:
             request.requestedRole === 'SUPER_ADMIN'
               ? 'SUPER_ADMIN'
-              : highestMembershipRole ?? request.requestedRole,
+              : (highestMembershipRole ?? request.requestedRole),
           currentOrganizationId: request.organizationId,
         },
       });
@@ -1230,10 +1236,7 @@ export class UsersService {
   }
 
   private toProfilePersistenceInput(
-    input: Omit<
-      UpdateMyProfileInput,
-      'firstName' | 'lastName' | 'displayName'
-    >,
+    input: Omit<UpdateMyProfileInput, 'firstName' | 'lastName' | 'displayName'>,
   ) {
     return {
       ...input,
@@ -1250,9 +1253,7 @@ export class UsersService {
     };
   }
 
-  private toUpdateAbilityPersistenceInput(
-    input: UpdateUserAbilityInput,
-  ) {
+  private toUpdateAbilityPersistenceInput(input: UpdateUserAbilityInput) {
     return {
       ...input,
       aiMetadata: this.toJsonValue(input.aiMetadata),
