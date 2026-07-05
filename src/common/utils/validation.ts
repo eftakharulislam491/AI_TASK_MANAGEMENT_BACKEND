@@ -16,7 +16,12 @@ export const emailValue = z.email().trim().toLowerCase();
 export const resourceIdValue = trimmedString;
 export const optionalUrlValue = z.url().trim().optional();
 export const paginationPageValue = z.coerce.number().int().min(1).default(1);
-export const paginationLimitValue = z.coerce.number().int().min(1).max(100).default(20);
+export const paginationLimitValue = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(100)
+  .default(20);
 export const booleanQueryValue = z
   .union([z.boolean(), z.enum(['true', 'false'])])
   .transform((value) => value === true || value === 'true');

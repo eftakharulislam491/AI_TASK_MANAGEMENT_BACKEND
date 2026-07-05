@@ -18,11 +18,10 @@ export class TenantAccessGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const options =
-      this.reflector.getAllAndOverride<TenantAccessOptions>(TENANT_ACCESS_KEY, [
-        context.getHandler(),
-        context.getClass(),
-      ]);
+    const options = this.reflector.getAllAndOverride<TenantAccessOptions>(
+      TENANT_ACCESS_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
     if (!options) {
       return true;

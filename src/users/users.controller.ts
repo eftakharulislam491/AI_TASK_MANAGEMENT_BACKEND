@@ -39,10 +39,7 @@ export class UsersController {
   }
 
   @Patch('me/profile')
-  updateMyProfile(
-    @CurrentUser() currentUser: JwtUser,
-    @Body() body: unknown,
-  ) {
+  updateMyProfile(@CurrentUser() currentUser: JwtUser, @Body() body: unknown) {
     return this.usersService.updateMyProfile(
       currentUser,
       parseWithSchema(updateMyProfileSchema, body),
@@ -50,10 +47,7 @@ export class UsersController {
   }
 
   @Post('me/abilities')
-  createMyAbility(
-    @CurrentUser() currentUser: JwtUser,
-    @Body() body: unknown,
-  ) {
+  createMyAbility(@CurrentUser() currentUser: JwtUser, @Body() body: unknown) {
     return this.usersService.createMyAbility(
       currentUser,
       parseWithSchema(createUserAbilitySchema, body),

@@ -15,10 +15,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { JwtUser } from './interfaces/jwt-user.interface';
 import type { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
-import {
-  ACCESS_TOKEN_COOKIE,
-  REFRESH_TOKEN_COOKIE,
-} from './auth.constants';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from './auth.constants';
 import {
   loginSchema,
   logoutSchema,
@@ -50,7 +47,9 @@ export class AuthController {
     @Body() body: unknown,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const result = await this.authService.login(parseWithSchema(loginSchema, body));
+    const result = await this.authService.login(
+      parseWithSchema(loginSchema, body),
+    );
     this.setAuthCookies(response, result.accessToken, result.refreshToken);
     return result;
   }
@@ -62,8 +61,11 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const parsedBody = refreshSchema.safeParse(body);
+    const cookies = request.cookies as
+      | Record<string, string | undefined>
+      | undefined;
     const refreshToken =
-      request.cookies?.[REFRESH_TOKEN_COOKIE] ??
+      cookies?.[REFRESH_TOKEN_COOKIE] ??
       (parsedBody.success ? parsedBody.data.refreshToken : undefined);
 
     const result = await this.authService.refresh(
@@ -81,9 +83,12 @@ export class AuthController {
     @Res({ passthrough: true }) response: Response,
   ) {
     const parsed = logoutSchema.safeParse(body);
+    const cookies = request.cookies as
+      | Record<string, string | undefined>
+      | undefined;
     const refreshToken =
       refreshTokenHeader?.trim() ||
-      request.cookies?.[REFRESH_TOKEN_COOKIE] ||
+      cookies?.[REFRESH_TOKEN_COOKIE] ||
       (parsed.success ? parsed.data.refreshToken : undefined);
 
     const result = await this.authService.logout(refreshToken);
