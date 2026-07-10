@@ -30,6 +30,19 @@ const envSchema = z
       .default('7d'),
     ALLOWED_ORIGINS: z.string().trim().default('http://localhost:3000'),
     OPENAI_API_KEY: z.string().trim().optional(),
+    OPENROUTER_API_KEY: z.string().trim().optional(),
+    OPENROUTER_EMBEDDING_MODEL: z
+      .string()
+      .trim()
+      .default('nvidia/llama-nemotron-embed-vl-1b-v2:free'),
+    OPENROUTER_LLM_MODEL: z
+      .string()
+      .trim()
+      .default('nvidia/nemotron-3-super-120b-a12b:free'),
+    REDIS_URL: z.string().trim().optional(),
+    REDIS_HOST: z.string().trim().default('localhost'),
+    REDIS_PORT: z.coerce.number().int().positive().default(6379),
+    REDIS_PASSWORD: z.string().trim().optional(),
     APP_URL: z.string().trim().default('http://localhost:5000'),
     SMTP_HOST: z.string().trim().optional(),
     SMTP_PORT: z.coerce.number().int().positive().default(587),

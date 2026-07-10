@@ -22,11 +22,32 @@ type TaskEmailInput = {
   deadline?: Date | string | null;
 };
 
+type DailyDigestTask = {
+  title: string;
+  status: string;
+  priority: string;
+  projectName?: string;
+  taskUrl?: string;
+  deadline?: Date | string | null;
+  isOverdue: boolean;
+};
+
+type DailyDigestEmailInput = {
+  to: string;
+  recipientName?: string;
+  dashboardUrl?: string;
+  totalCount: number;
+  overdueCount: number;
+  dueSoonCount: number;
+  tasks: DailyDigestTask[];
+};
+
 type TemplateName =
   | 'invitation'
   | 'task-assigned'
   | 'deadline-reminder'
-  | 'overdue-task';
+  | 'overdue-task'
+  | 'daily-digest';
 
 @Injectable()
 export class MailService {
@@ -87,6 +108,25 @@ export class MailService {
         taskTitle: input.taskTitle,
         taskUrl: input.taskUrl,
         deadline: input.deadline ? this.formatDate(input.deadline) : undefined,
+        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
+      }),
+    });
+  }
+
+  async sendDailyDigestEmail(input: DailyDigestEmailInput) {
+    await this.sendMail({
+      to: input.to,
+      subject: `Daily task digest: ${input.totalCount} active tasks`,
+      html: await this.renderTemplate('daily-digest', {
+        recipientName: input.recipientName,
+        dashboardUrl: input.dashboardUrl,
+        totalCount: input.totalCount,
+        overdueCount: input.overdueCount,
+        dueSoonCount: input.dueSoonCount,
+        tasks: input.tasks.map((task) => ({
+          ...task,
+          deadline: task.deadline ? this.formatDate(task.deadline) : undefined,
+        })),
         appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });

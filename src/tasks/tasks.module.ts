@@ -8,7 +8,13 @@ import { TasksController } from './tasks.controller';
 import { TasksService } from './tasks.service';
 
 @Module({
-  imports: [ActivityModule, AuthModule, MailModule, NotificationsModule, PrismaModule],
+  imports: [
+    ActivityModule,
+    AuthModule,
+    MailModule,
+    NotificationsModule,
+    PrismaModule,
+  ],
   controllers: [TasksController],
   providers: [TasksService],
   exports: [TasksService],

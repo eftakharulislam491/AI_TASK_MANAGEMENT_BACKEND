@@ -1242,4 +1242,389 @@ if (responseJson.success && responseJson.data && responseJson.data.user && respo
   *(অর্গানাইজেশন সম্পর্কিত হেলথ স্ট্যাটাস)*
 
 ---
+
+### 1️⃣2️⃣ RAG Module (`/rag`) - New AI Search Feature
+
+> Important: Ei module test korar age `.env` file e `OPENROUTER_API_KEY` set korte hobe. Database e `pgvector` extension and `document_embeddings` table migration applied thakte hobe.
+> Sob route protected, tai `Authorization: Bearer {{accessToken}}` and `x-organization-id: {{organizationId}}` header lagbe.
+
+#### 📌 1. Ingest Tasks Data for RAG
+* **HTTP Method:** `POST`
+* **Route:** `{{base_url}}/rag/ingest/tasks`
+* **Headers:** `Authorization: Bearer {{accessToken}}`, `x-organization-id: {{organizationId}}`
+* **ব্যাখ্যা (Explanation):**
+  Ei route organization er sob task data embedding kore vector database e save kore.
+  RAG query jeno task er status, priority, deadline, assignee, project context bujhte pare tar jonno age eta run korte hobe.
+* **Request Body:** Empty body
+* **Expected Response (201 Created):**
+  ```json
+  {
+    "success": true,
+    "statusCode": 201,
+    "data": {
+      "success": true,
+      "message": "Tasks indexed successfully.",
+      "indexedCount": 5
+    },
+    "timestamp": "2026-07-06T14:30:00.000Z"
+  }
+  ```
+
+#### 📌 2. Ingest Projects Data for RAG
+* **HTTP Method:** `POST`
+* **Route:** `{{base_url}}/rag/ingest/projects`
+* **Headers:** `Authorization: Bearer {{accessToken}}`, `x-organization-id: {{organizationId}}`
+* **ব্যাখ্যা (Explanation):**
+  Ei route active project data embedding kore RAG context e add kore.
+  Project name, owner, team, member count and task count niye AI answer dite parbe.
+* **Request Body:** Empty body
+* **Expected Response (201 Created):**
+  ```json
+  {
+    "success": true,
+    "statusCode": 201,
+    "data": {
+      "success": true,
+      "message": "Projects indexed successfully.",
+      "indexedCount": 2
+    },
+    "timestamp": "2026-07-06T14:31:00.000Z"
+  }
+  ```
+
+#### 📌 3. RAG Stats
+* **HTTP Method:** `GET`
+* **Route:** `{{base_url}}/rag/stats`
+* **Headers:** `Authorization: Bearer {{accessToken}}`, `x-organization-id: {{organizationId}}`
+* **ব্যাখ্যা (Explanation):**
+  Vector database e current organization er koto document indexed ache seta dekhay.
+  TASK and PROJECT source type wise breakdown check korar jonno useful.
+* **Expected Response (200 OK):**
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "data": {
+      "totalActiveDocuments": 7,
+      "sourceTypeBreakdown": {
+        "PROJECT": 2,
+        "TASK": 5
+      },
+      "timestamp": "2026-07-06T14:32:00.000Z"
+    },
+    "timestamp": "2026-07-06T14:32:00.000Z"
+  }
+  ```
+
+#### 📌 4. Ask RAG Question
+* **HTTP Method:** `POST`
+* **Route:** `{{base_url}}/rag/query`
+* **Headers:** `Authorization: Bearer {{accessToken}}`, `x-organization-id: {{organizationId}}`
+* **ব্যাখ্যা (Explanation):**
+  Ei route indexed task/project context theke relevant document retrieve kore OpenRouter LLM diye answer generate kore.
+  Same query second time korle Redis available thakle cache theke response ashbe.
+* **Request Body (Dummy Data - JSON):**
+  ```json
+  {
+    "query": "Which urgent tasks are due soon?",
+    "limit": 5,
+    "sourceType": "TASK",
+    "asJson": false
+  }
+  ```
+* **Expected Response (200 OK):**
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "data": {
+      "message": "Answer generated successfully.",
+      "answer": "The urgent tasks due soon are...",
+      "sources": [
+        {
+          "id": "8f6b2f68-1111-4444-9999-123456789abc",
+          "chunkKey": "task-cm3z_task_123",
+          "sourceType": "TASK",
+          "sourceId": "cm3z_task_123",
+          "sourceLabel": "Fix payment bug",
+          "similarity": 0.82,
+          "metadata": {
+            "taskId": "cm3z_task_123",
+            "priority": "URGENT"
+          }
+        }
+      ],
+      "contextUsed": 1
+    },
+    "timestamp": "2026-07-06T14:33:00.000Z"
+  }
+  ```
+
+#### 📌 5. Ask RAG Question as JSON
+* **HTTP Method:** `POST`
+* **Route:** `{{base_url}}/rag/query`
+* **Headers:** `Authorization: Bearer {{accessToken}}`, `x-organization-id: {{organizationId}}`
+* **ব্যাখ্যা (Explanation):**
+  `asJson: true` dile LLM ke valid JSON answer dite bola hoy.
+  Dashboard e structured AI result dekhate chaile ei mode useful.
+* **Request Body (Dummy Data - JSON):**
+  ```json
+  {
+    "query": "Give me a JSON summary of overdue tasks",
+    "limit": 5,
+    "sourceType": "TASK",
+    "asJson": true
+  }
+  ```
+* **Expected Response (200 OK):**
+  ```json
+  {
+    "success": true,
+    "statusCode": 200,
+    "data": {
+      "message": "Answer generated successfully.",
+      "answer": {
+        "summary": "There are overdue tasks that need attention.",
+        "tasks": []
+      },
+      "sources": [],
+      "contextUsed": 0
+    },
+    "timestamp": "2026-07-06T14:34:00.000Z"
+  }
+  ```
+
+---
+
+### 1️⃣3️⃣ Redis Cache Testing for RAG
+
+> Redis direct HTTP route nai. Eta RAG query endpoint er vitore cache layer hisebe kaj kore.
+> Redis off thakleo app crash korbe na; sudhu cache bypass hobe.
+
+#### 📌 1. Cache Miss Test
+* **Step:** Same body diye first time `POST {{base_url}}/rag/query` call korun.
+* **Expected Message:**
+  ```json
+  {
+    "message": "Answer generated successfully."
+  }
+  ```
+* **ব্যাখ্যা (Explanation):**
+  First request e cache empty thake, tai AI answer generate hoy.
+  Successful hole result Redis e 30 minutes er jonno store hoy.
+
+#### 📌 2. Cache Hit Test
+* **Step:** Same `query`, `limit`, `sourceType`, `asJson` and same organization diye abar `POST {{base_url}}/rag/query` call korun.
+* **Expected Message:**
+  ```json
+  {
+    "message": "Answer retrieved from cache"
+  }
+  ```
+* **ব্যাখ্যা (Explanation):**
+  Second request Redis theke answer return korbe, tai OpenRouter call kom hobe.
+  Cache key tenant scoped: `rag:query:<organizationId>:<query>:<limit>:<sourceType>:<format>`.
+
+#### 📌 3. Redis CLI Verification
+* **Command:**
+  ```bash
+  redis-cli keys "rag:query:*"
+  redis-cli ttl "<cache-key>"
+  ```
+* **ব্যাখ্যা (Explanation):**
+  Redis e RAG cache key save hoyeche kina eta diye check kora jay.
+  TTL around `1800` seconds thakle cache setup thik ache.
+
+---
+
+### 1️⃣4️⃣ Scheduler / Cron Jobs Testing
+
+> Scheduler er direct API route nai. Server run thakle background e cron job auto run kore.
+> Email path test korte SMTP env set korte hobe. Notification path test korte `/notifications` endpoint check korte hobe.
+
+#### 📌 1. Deadline Reminder Cron
+* **Cron:** Every hour
+* **Test Data:** Ekta assigned task create korun jar `deadline` current time theke around 24h ba 48h pore.
+* **Expected Result:**
+  - `TASK_DEADLINE_APPROACHING` notification create hobe.
+  - SMTP configured thakle deadline reminder email jabe.
+  - Server log e `Deadline reminder check completed` dekhabe.
+* **ব্যাখ্যা (Explanation):**
+  Cron job 24h and 48h deadline window check kore.
+  Duplicate notification avoid korar jonno metadata diye already sent reminder check kore.
+
+#### 📌 2. Overdue Task Cron
+* **Cron:** Every hour
+* **Test Data:** Ekta assigned task create/update korun:
+  ```json
+  {
+    "status": "IN_PROGRESS",
+    "deadline": "2026-07-05T10:00:00.000Z"
+  }
+  ```
+* **Expected Result:**
+  - `TASK_OVERDUE` notification create hobe.
+  - SMTP configured thakle overdue email jabe.
+  - Server log e `Overdue task check completed` dekhabe.
+* **ব্যাখ্যা (Explanation):**
+  Deadline past hoye gele and status `DONE`/`CANCELLED` na hole overdue alert fire hoy.
+  Same task er jonno duplicate overdue notification avoid kora hoy.
+
+#### 📌 3. Daily Digest Cron
+* **Cron:** `0 9 * * *` meaning protidin sokal 9 tay
+* **Expected Result:**
+  - Active assigned task thaka user der daily digest email jabe.
+  - Email template: `src/mail/templates/daily-digest.ejs`
+* **ব্যাখ্যা (Explanation):**
+  User er active, overdue, and due-soon task summary email e pathano hoy.
+  Eta direct Postman diye trigger hoy na; server run thakle scheduled time e auto run hoy.
+
+---
+
+## 🚀 Project Run Guide - Backend Local Setup
+
+### 1. Backend Folder e Jan
+```bash
+cd backend
+```
+
+### 2. Dependencies Install
+```bash
+npm install
+```
+
+### 3. `.env` Setup
+`.env.example` dekhe `.env` file e sob property rakhun. Value apnar local/production setup onujayi fill korben.
+
+Minimum required:
+```env
+PORT=5000
+NODE_ENV=development
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/taskflow?schema=public
+JWT_SECRET=replace-with-a-long-random-secret-min-32-chars
+JWT_EXPIRES_IN=15m
+JWT_REFRESH_SECRET=replace-with-another-long-random-secret
+JWT_REFRESH_EXPIRES_IN=7d
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+APP_URL=http://localhost:3000
+```
+
+Email optional, but invitation/deadline/overdue/digest email test korte lagbe:
+```env
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your@gmail.com
+SMTP_PASS=your-16-char-app-password
+SMTP_FROM_EMAIL=noreply@taskflow.com
+SMTP_FROM_NAME=TaskFlow
+```
+
+RAG required:
+```env
+OPENROUTER_API_KEY=sk-or-v1-your-key
+OPENROUTER_EMBEDDING_MODEL=nvidia/llama-nemotron-embed-vl-1b-v2:free
+OPENROUTER_LLM_MODEL=nvidia/nemotron-3-super-120b-a12b:free
+```
+
+Redis optional but cache test korte lagbe:
+```env
+REDIS_URL=redis://localhost:6379
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=
+```
+
+### 4. PostgreSQL + pgvector Ready Korun
+Local PostgreSQL use korle database create korun:
+```bash
+createdb taskflow
+```
+
+`pgvector` extension install thakte hobe. Migration e extension create command ache, but database user er permission lagbe.
+
+### 5. Prisma Migration Run
+Fresh local database hole:
+```bash
+npx prisma migrate dev
+```
+
+Already configured remote/local DB check korte:
+```bash
+npx prisma migrate status
+npx prisma validate
+```
+
+### 6. Redis Run Korun
+Docker thakle:
+```bash
+docker run --name taskflow-redis -p 6379:6379 -d redis:7
+```
+
+Already container create kora thakle:
+```bash
+docker start taskflow-redis
+```
+
+Redis na thakleo app run korbe, but RAG cache hit/miss test hobe na.
+
+### 7. Development Server Start
+```bash
+npm run dev
+```
+
+Default API base URL:
+```txt
+http://localhost:5000/api/v1
+```
+
+Port busy thakle `.env` e `PORT=5010` kore abar run korun.
+
+### 8. Health Check
+Browser/Postman e hit korun:
+```txt
+GET http://localhost:5000/api/v1/health
+```
+
+Expected `status: ok` hole backend and database connected.
+
+### 9. Normal Testing Flow
+1. `POST /auth/register` kore owner + organization create korun.
+2. Response theke `accessToken` and `organizationId` Postman environment e save korun.
+3. Protected route e headers add korun:
+   ```txt
+   Authorization: Bearer {{accessToken}}
+   x-organization-id: {{organizationId}}
+   ```
+4. Teams, Projects, Tasks, Comments, Attachments, Invitations route test korun.
+5. RAG test korte age:
+   - task/project create korun
+   - `POST /rag/ingest/tasks`
+   - `POST /rag/ingest/projects`
+   - `POST /rag/query`
+
+### 10. Useful Verification Commands
+```bash
+npm run lint
+npm run build
+npm test -- --runInBand
+npx prisma validate
+npx prisma migrate status
+```
+
+### 11. Common Problems and Fix
+* **`EADDRINUSE: address already in use :::5000`**
+  - Port 5000 already running. `.env` e `PORT=5010` set korun or old server stop korun.
+* **`Redis ECONNREFUSED`**
+  - Redis server off. Docker diye Redis start korun. App crash korbe na, only cache disabled.
+* **`OPENROUTER_API_KEY is not configured`**
+  - `.env` e valid OpenRouter API key dite hobe.
+* **`Expected 1536-dimensional embedding`**
+  - Embedding model 1536 dimension return kortese na. `OPENROUTER_EMBEDDING_MODEL` update korte hobe or schema/vector dimension align korte hobe.
+* **`pgvector/vector extension error`**
+  - PostgreSQL e pgvector install nai or DB user extension create permission pachche na.
+* **Email jacche na**
+  - SMTP env missing/wrong. Gmail use korle app password lagbe.
+
+---
 *(এই `test.md` ফাইলটি দিয়ে আপনি Postman-এ সরাসরি রিকোয়েস্ট তৈরি করে সব ডাটা এবং কোডবেস নির্ভুলভাবে চেক করতে পারবেন)*

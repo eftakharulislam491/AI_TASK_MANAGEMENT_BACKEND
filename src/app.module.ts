@@ -19,6 +19,8 @@ import { InvitationsModule } from './invitations/invitations.module';
 import { MailModule } from './mail/mail.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ProjectsModule } from './projects/projects.module';
+import { RAGModule } from './rag/rag.module';
+import { SchedulerModule } from './scheduler/scheduler.module';
 import { TasksModule } from './tasks/tasks.module';
 import { TeamsModule } from './teams/teams.module';
 import { UsersModule } from './users/users.module';
@@ -57,6 +59,8 @@ import { UsersModule } from './users/users.module';
     MailModule,
     NotificationsModule,
     ProjectsModule,
+    RAGModule,
+    SchedulerModule,
     TasksModule,
     TeamsModule,
     UsersModule,
@@ -74,6 +78,8 @@ import { UsersModule } from './users/users.module';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(LoggerMiddleware, TenantContextMiddleware).forRoutes('*');
+    consumer
+      .apply(LoggerMiddleware, TenantContextMiddleware)
+      .forRoutes('{*path}');
   }
 }
