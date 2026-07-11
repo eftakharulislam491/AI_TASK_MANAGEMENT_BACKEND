@@ -528,7 +528,7 @@ export class InvitationsService {
 
   private buildInvitationUrl(token: string) {
     const appUrl = this.configService.get('APP_URL', { infer: true });
-    return `${appUrl}/invitations/accept?token=${token}`;
+    return `${appUrl}/invite/accept?token=${token}`;
   }
 
   private async deliverInvitationEmail(invitation: InvitationRow) {

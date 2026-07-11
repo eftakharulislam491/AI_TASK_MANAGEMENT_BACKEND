@@ -5,14 +5,24 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import type { Prisma, Role, TaskStatus } from '@prisma/client';
+import type {
+  Prisma,
+  ProjectLeaveRequestStatus,
+  Role,
+  TaskStatus,
+} from '@prisma/client';
+import { ActivityService } from '../activity/activity.service';
 import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 import { serializeResponse } from '../common/utils/response';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type {
   AddProjectMemberInput,
+  CreateProjectLeaveRequestInput,
   CreateProjectInput,
+  ListProjectLeaveRequestsQueryInput,
   ListProjectsQueryInput,
+  ReviewProjectLeaveRequestInput,
   UpdateProjectInput,
 } from './projects.schemas';
 
@@ -93,9 +103,45 @@ type ProjectDetailRow = Prisma.ProjectGetPayload<{
   select: typeof projectDetailSelect;
 }>;
 
+const projectLeaveRequestSelect = {
+  id: true,
+  projectId: true,
+  organizationId: true,
+  requesterId: true,
+  reason: true,
+  status: true,
+  reviewNote: true,
+  reviewedById: true,
+  reviewedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  project: {
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      ownerId: true,
+      teamId: true,
+    },
+  },
+  requester: {
+    select: userSummarySelect,
+  },
+  reviewedBy: {
+    select: userSummarySelect,
+  },
+} satisfies Prisma.ProjectLeaveRequestSelect;
+
+type ProjectLeaveRequestRow = Prisma.ProjectLeaveRequestGetPayload<{
+  select: typeof projectLeaveRequestSelect;
+}>;
+
 @Injectable()
 export class ProjectsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   async createProject(currentUser: JwtUser, input: CreateProjectInput) {
     const organizationId = this.getOrganizationId(currentUser);
@@ -371,6 +417,239 @@ export class ProjectsService {
     });
   }
 
+  async createProjectLeaveRequest(
+    currentUser: JwtUser,
+    projectId: string,
+    input: CreateProjectLeaveRequestInput,
+  ) {
+    const organizationId = this.getOrganizationId(currentUser);
+    const project = await this.getProjectOrThrow(organizationId, projectId, {
+      id: true,
+      name: true,
+      ownerId: true,
+    } satisfies Prisma.ProjectSelect);
+
+    if (project.ownerId === currentUser.sub) {
+      throw new BadRequestException('Project owner cannot request to leave.');
+    }
+
+    await this.assertActiveOrganizationMember(
+      organizationId,
+      currentUser.sub,
+      'You must be an active organization member to request leaving a project.',
+    );
+
+    const projectMember = await this.prisma.projectMember.findUnique({
+      where: {
+        projectId_userId: {
+          projectId,
+          userId: currentUser.sub,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!projectMember) {
+      throw new ForbiddenException('You are not a member of this project.');
+    }
+
+    const existing = await this.prisma.projectLeaveRequest.findFirst({
+      where: {
+        projectId,
+        requesterId: currentUser.sub,
+        status: 'PENDING',
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        'You already have a pending leave request for this project.',
+      );
+    }
+
+    const request = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.projectLeaveRequest.create({
+        data: {
+          projectId,
+          organizationId,
+          requesterId: currentUser.sub,
+          reason: input.reason,
+        },
+        select: projectLeaveRequestSelect,
+      });
+
+      await ActivityService.logActivity(tx, {
+        organizationId,
+        actorId: currentUser.sub,
+        projectId,
+        action: 'PROJECT_LEAVE_REQUEST_CREATED',
+        metadata: {
+          requestId: created.id,
+          requesterId: currentUser.sub,
+          projectName: project.name,
+        },
+      });
+
+      return created;
+    });
+
+    const recipients = await this.getProjectReviewRecipientIds(
+      organizationId,
+      projectId,
+      currentUser.sub,
+    );
+
+    await this.notificationsService.createBulkNotifications(recipients, {
+      organizationId,
+      type: 'PROJECT_LEAVE_REQUESTED',
+      title: 'Project leave request',
+      body: `${this.getDisplayName(request.requester)} wants to leave ${project.name}.`,
+      metadata: {
+        requestId: request.id,
+        projectId,
+        requesterId: currentUser.sub,
+      },
+    });
+
+    return serializeResponse({
+      message: 'Leave request submitted successfully.',
+      request: this.mapProjectLeaveRequest(request),
+    });
+  }
+
+  async listProjectLeaveRequests(
+    currentUser: JwtUser,
+    query: ListProjectLeaveRequestsQueryInput,
+  ) {
+    const organizationId = this.getOrganizationId(currentUser);
+    const page = query.page;
+    const limit = query.limit;
+    const skip = (page - 1) * limit;
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+    const canReview = role === 'SUPER_ADMIN' || role === 'MANAGER';
+    const where = this.buildProjectLeaveRequestWhere(
+      organizationId,
+      currentUser.sub,
+      canReview,
+      query,
+    );
+
+    const [requests, total] = await Promise.all([
+      this.prisma.projectLeaveRequest.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip,
+        take: limit,
+        select: projectLeaveRequestSelect,
+      }),
+      this.prisma.projectLeaveRequest.count({ where }),
+    ]);
+
+    return serializeResponse({
+      data: requests.map((request) => this.mapProjectLeaveRequest(request)),
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    });
+  }
+
+  async reviewProjectLeaveRequest(
+    currentUser: JwtUser,
+    requestId: string,
+    input: ReviewProjectLeaveRequestInput,
+  ) {
+    const organizationId = this.getOrganizationId(currentUser);
+    const request = await this.prisma.projectLeaveRequest.findFirst({
+      where: {
+        id: requestId,
+        organizationId,
+      },
+      select: projectLeaveRequestSelect,
+    });
+
+    if (!request) {
+      throw new NotFoundException('Leave request not found.');
+    }
+
+    this.assertCanManageProject(
+      currentUser,
+      organizationId,
+      request.project.ownerId,
+    );
+
+    if (request.status !== 'PENDING') {
+      throw new BadRequestException(
+        'Only pending leave requests can be reviewed.',
+      );
+    }
+
+    const reviewed = await this.prisma.$transaction(async (tx) => {
+      if (input.decision === 'APPROVED') {
+        await tx.projectMember.deleteMany({
+          where: {
+            projectId: request.projectId,
+            userId: request.requesterId,
+          },
+        });
+      }
+
+      const updated = await tx.projectLeaveRequest.update({
+        where: {
+          id: request.id,
+        },
+        data: {
+          status: input.decision,
+          reviewNote: input.reviewNote,
+          reviewedById: currentUser.sub,
+          reviewedAt: new Date(),
+        },
+        select: projectLeaveRequestSelect,
+      });
+
+      await ActivityService.logActivity(tx, {
+        organizationId,
+        actorId: currentUser.sub,
+        projectId: request.projectId,
+        action: 'PROJECT_LEAVE_REQUEST_REVIEWED',
+        metadata: {
+          requestId: request.id,
+          decision: input.decision,
+          requesterId: request.requesterId,
+        },
+      });
+
+      return updated;
+    });
+
+    await this.notificationsService.createNotification({
+      userId: reviewed.requesterId,
+      organizationId,
+      type: 'PROJECT_LEAVE_REVIEWED',
+      title: 'Leave request reviewed',
+      body: `Your request to leave ${reviewed.project.name} was ${input.decision.toLowerCase()}.`,
+      metadata: {
+        requestId: reviewed.id,
+        projectId: reviewed.projectId,
+        decision: input.decision,
+      },
+    });
+
+    return serializeResponse({
+      message: 'Leave request reviewed successfully.',
+      request: this.mapProjectLeaveRequest(reviewed),
+    });
+  }
+
   private async getProjectMembers(projectId: string, message: string) {
     const members = await this.prisma.projectMember.findMany({
       where: {
@@ -395,6 +674,120 @@ export class ProjectsService {
       message,
       members,
     });
+  }
+
+  private buildProjectLeaveRequestWhere(
+    organizationId: string,
+    currentUserId: string,
+    canReview: boolean,
+    query: ListProjectLeaveRequestsQueryInput,
+  ) {
+    const where = {
+      organizationId,
+      ...(query.projectId ? { projectId: query.projectId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+    } satisfies Prisma.ProjectLeaveRequestWhereInput;
+
+    if (!canReview || query.scope === 'mine') {
+      return {
+        ...where,
+        requesterId: currentUserId,
+      } satisfies Prisma.ProjectLeaveRequestWhereInput;
+    }
+
+    if (query.scope === 'pending') {
+      return {
+        ...where,
+        status: query.status ?? 'PENDING',
+        ...(query.requesterId ? { requesterId: query.requesterId } : {}),
+      } satisfies Prisma.ProjectLeaveRequestWhereInput;
+    }
+
+    return {
+      ...where,
+      ...(query.requesterId ? { requesterId: query.requesterId } : {}),
+    } satisfies Prisma.ProjectLeaveRequestWhereInput;
+  }
+
+  private async getProjectReviewRecipientIds(
+    organizationId: string,
+    projectId: string,
+    requesterId: string,
+  ) {
+    const [project, managerMemberships] = await Promise.all([
+      this.prisma.project.findFirst({
+        where: {
+          id: projectId,
+          organizationId,
+        },
+        select: {
+          ownerId: true,
+        },
+      }),
+      this.prisma.organizationMembership.findMany({
+        where: {
+          organizationId,
+          status: 'ACTIVE',
+          role: 'MANAGER',
+        },
+        select: {
+          userId: true,
+        },
+      }),
+    ]);
+
+    return [
+      project?.ownerId,
+      ...managerMemberships.map((membership) => membership.userId),
+    ].filter(
+      (userId): userId is string => Boolean(userId) && userId !== requesterId,
+    );
+  }
+
+  private mapProjectLeaveRequest(request: ProjectLeaveRequestRow) {
+    return {
+      id: request.id,
+      projectId: request.projectId,
+      organizationId: request.organizationId,
+      requesterId: request.requesterId,
+      memberId: request.requesterId,
+      reason: request.reason,
+      status: this.mapProjectLeaveStatus(request.status),
+      rawStatus: request.status,
+      reviewNote: request.reviewNote,
+      reviewedById: request.reviewedById,
+      reviewedAt: request.reviewedAt,
+      createdAt: request.createdAt,
+      updatedAt: request.updatedAt,
+      project: request.project,
+      requester: request.requester,
+      member: request.requester,
+      reviewedBy: request.reviewedBy,
+    };
+  }
+
+  private mapProjectLeaveStatus(status: ProjectLeaveRequestStatus) {
+    const map = {
+      PENDING: 'pending',
+      APPROVED: 'approved',
+      REJECTED: 'rejected',
+      CANCELED: 'canceled',
+    } satisfies Record<ProjectLeaveRequestStatus, string>;
+
+    return map[status];
+  }
+
+  private getDisplayName(user: {
+    firstName: string;
+    lastName: string;
+    displayName: string | null;
+    email: string;
+  }) {
+    return (
+      user.displayName ||
+      `${user.firstName} ${user.lastName}`.trim() ||
+      user.email
+    );
   }
 
   private getOrganizationId(currentUser: JwtUser) {

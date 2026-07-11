@@ -130,6 +130,10 @@ export const cancelRoleChangeRequestSchema = z.object({
   reason: optionalTrimmedString,
 });
 
+export const updateOrganizationSettingsSchema = z.object({
+  autoAssignOnTaskCreate: z.boolean(),
+});
+
 export type UpdateMyProfileInput = z.infer<typeof updateMyProfileSchema>;
 export type CreateUserAbilityInput = z.infer<typeof createUserAbilitySchema>;
 export type UpdateUserAbilityInput = z.infer<typeof updateUserAbilitySchema>;
@@ -145,6 +149,9 @@ export type ReviewRoleChangeRequestInput = z.infer<
 >;
 export type CancelRoleChangeRequestInput = z.infer<
   typeof cancelRoleChangeRequestSchema
+>;
+export type UpdateOrganizationSettingsInput = z.infer<
+  typeof updateOrganizationSettingsSchema
 >;
 
 export { parseWithSchema, resourceIdValue };

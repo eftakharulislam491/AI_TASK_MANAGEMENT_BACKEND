@@ -24,6 +24,7 @@ import {
   parseWithSchema,
   resourceIdValue,
   reviewRoleChangeRequestSchema,
+  updateOrganizationSettingsSchema,
   updateMyProfileSchema,
   updateUserAbilitySchema,
 } from './users.schemas';
@@ -38,11 +39,29 @@ export class UsersController {
     return this.usersService.getMe(currentUser);
   }
 
+  @Get('me/organization-settings')
+  getOrganizationSettings(@CurrentUser() currentUser: JwtUser) {
+    return this.usersService.getOrganizationSettings(currentUser);
+  }
+
   @Patch('me/profile')
   updateMyProfile(@CurrentUser() currentUser: JwtUser, @Body() body: unknown) {
     return this.usersService.updateMyProfile(
       currentUser,
       parseWithSchema(updateMyProfileSchema, body),
+    );
+  }
+
+  @Patch('me/organization-settings')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN', 'MANAGER')
+  updateOrganizationSettings(
+    @CurrentUser() currentUser: JwtUser,
+    @Body() body: unknown,
+  ) {
+    return this.usersService.updateOrganizationSettings(
+      currentUser,
+      parseWithSchema(updateOrganizationSettingsSchema, body),
     );
   }
 

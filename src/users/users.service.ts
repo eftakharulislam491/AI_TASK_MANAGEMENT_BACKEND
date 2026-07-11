@@ -15,6 +15,7 @@ import type {
   ListRoleChangeRequestsQueryInput,
   ListUsersQueryInput,
   ReviewRoleChangeRequestInput,
+  UpdateOrganizationSettingsInput,
   UpdateMyProfileInput,
   UpdateUserAbilityInput,
 } from './users.schemas';
@@ -61,6 +62,7 @@ const userDetailSelect = {
       id: true,
       name: true,
       slug: true,
+      settings: true,
     },
   },
   memberships: {
@@ -142,6 +144,7 @@ const userDirectorySelect = {
       id: true,
       name: true,
       slug: true,
+      settings: true,
     },
   },
   memberships: {
@@ -331,6 +334,102 @@ export class UsersService {
       success: true,
       message: 'Profile updated successfully.',
       user: this.mapUserDetail(updated),
+    });
+  }
+
+  async getOrganizationSettings(currentUser: JwtUser) {
+    const actor = await this.getActor(currentUser.sub);
+    const organizationId = this.resolveAccessibleOrganizationId(
+      actor,
+      currentUser.currentOrganizationId ?? undefined,
+    );
+
+    if (!organizationId) {
+      throw new BadRequestException(
+        'Organization context is required for this action.',
+      );
+    }
+
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        settings: true,
+      },
+    });
+
+    if (!organization) {
+      throw new NotFoundException('Organization not found.');
+    }
+
+    return serializeResponse({
+      organizationId: organization.id,
+      organizationName: organization.name,
+      settings: this.normalizeOrganizationSettings(organization.settings),
+    });
+  }
+
+  async updateOrganizationSettings(
+    currentUser: JwtUser,
+    input: UpdateOrganizationSettingsInput,
+  ) {
+    const actor = await this.getActor(currentUser.sub);
+    const organizationId = this.resolveAccessibleOrganizationId(
+      actor,
+      currentUser.currentOrganizationId ?? undefined,
+    );
+
+    if (!organizationId) {
+      throw new BadRequestException(
+        'Organization context is required for this action.',
+      );
+    }
+
+    const actorRole = this.getActorRoleForOrganization(actor, organizationId);
+
+    if (actor.role !== 'SUPER_ADMIN' && actorRole !== 'MANAGER') {
+      throw new ForbiddenException(
+        'Only managers can update organization settings.',
+      );
+    }
+
+    const existing = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: {
+        id: true,
+        name: true,
+        settings: true,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Organization not found.');
+    }
+
+    const settings = {
+      ...this.normalizeOrganizationSettings(existing.settings),
+      autoAssignOnTaskCreate: input.autoAssignOnTaskCreate,
+    };
+
+    const updated = await this.prisma.organization.update({
+      where: { id: organizationId },
+      data: {
+        settings: settings,
+      },
+      select: {
+        id: true,
+        name: true,
+        settings: true,
+      },
+    });
+
+    return serializeResponse({
+      message: 'Organization settings updated successfully.',
+      organizationId: updated.id,
+      organizationName: updated.name,
+      settings: this.normalizeOrganizationSettings(updated.settings),
     });
   }
 
@@ -862,6 +961,18 @@ export class UsersService {
     return organizationId;
   }
 
+  private getActorRoleForOrganization(actor: Actor, organizationId: string) {
+    if (actor.role === 'SUPER_ADMIN') {
+      return 'SUPER_ADMIN';
+    }
+
+    return actor.memberships.find(
+      (membership) =>
+        membership.organizationId === organizationId &&
+        membership.status === 'ACTIVE',
+    )?.role;
+  }
+
   private assertCanAccessUser(actor: Actor, target: UserDetail) {
     if (actor.role === 'SUPER_ADMIN') {
       return;
@@ -1333,6 +1444,17 @@ export class UsersService {
       reviewedAt: request.reviewedAt,
       createdAt: request.createdAt,
       updatedAt: request.updatedAt,
+    };
+  }
+
+  private normalizeOrganizationSettings(settings: unknown) {
+    const value =
+      settings && typeof settings === 'object' && !Array.isArray(settings)
+        ? (settings as Record<string, unknown>)
+        : {};
+
+    return {
+      autoAssignOnTaskCreate: value.autoAssignOnTaskCreate === true,
     };
   }
 }

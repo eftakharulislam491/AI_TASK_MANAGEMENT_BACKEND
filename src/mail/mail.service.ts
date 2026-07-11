@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { renderFile } from 'ejs';
 import nodemailer, { type Transporter } from 'nodemailer';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AppEnv } from '../config/env';
 
@@ -196,7 +197,7 @@ export class MailService {
     templateName: TemplateName,
     data: Record<string, unknown>,
   ) {
-    const filePath = join(__dirname, 'templates', `${templateName}.ejs`);
+    const filePath = this.resolveTemplatePath(templateName);
 
     return new Promise<string>((resolve, reject) => {
       renderFile(filePath, data, (error, html) => {
@@ -208,6 +209,25 @@ export class MailService {
         resolve(html);
       });
     });
+  }
+
+  private resolveTemplatePath(templateName: TemplateName) {
+    const fileName = `${templateName}.ejs`;
+    const candidates = [
+      join(__dirname, 'templates', fileName),
+      join(process.cwd(), 'dist', 'mail', 'templates', fileName),
+      join(process.cwd(), 'src', 'mail', 'templates', fileName),
+    ];
+
+    const templatePath = candidates.find((candidate) => existsSync(candidate));
+
+    if (!templatePath) {
+      throw new Error(
+        `Email template "${templateName}" not found in expected locations.`,
+      );
+    }
+
+    return templatePath;
   }
 
   private formatDate(value: Date | string) {

@@ -18,7 +18,7 @@ export const createTeamSchema = z.object({
   name: trimmedString,
   slug: slugValue,
   description: optionalTrimmedString,
-  leaderId: resourceIdValue.optional(),
+  leaderId: z.union([resourceIdValue, z.null()]).optional(),
 });
 
 export const updateTeamSchema = createTeamSchema.partial();

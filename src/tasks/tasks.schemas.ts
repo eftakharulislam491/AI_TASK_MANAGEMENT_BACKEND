@@ -30,12 +30,17 @@ const tagsValue = z.preprocess((value) => {
   return value;
 }, z.array(trimmedString).default([]));
 
+const optionalAssigneeValue = z
+  .union([resourceIdValue, z.literal(''), z.null()])
+  .optional()
+  .transform((value) => (value === '' ? undefined : value));
+
 export const createTaskSchema = z.object({
   projectId: resourceIdValue.optional(),
   title: trimmedString,
   description: optionalTrimmedString,
   priority: taskPrioritySchema.default('MEDIUM'),
-  assigneeId: resourceIdValue.optional(),
+  assigneeId: optionalAssigneeValue,
   deadline: z.coerce.date().optional(),
   estimatedHours: z.coerce.number().positive().optional(),
   tags: tagsValue,
@@ -50,7 +55,9 @@ export const updateTaskStatusSchema = z.object({
 });
 
 export const assignTaskSchema = z.object({
-  assigneeId: resourceIdValue,
+  assigneeId: z
+    .union([resourceIdValue, z.literal(''), z.null()])
+    .transform((value) => (value === '' ? null : value)),
 });
 
 export const listTasksQuerySchema = z.object({

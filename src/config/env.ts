@@ -43,7 +43,7 @@ const envSchema = z
     REDIS_HOST: z.string().trim().default('localhost'),
     REDIS_PORT: z.coerce.number().int().positive().default(6379),
     REDIS_PASSWORD: z.string().trim().optional(),
-    APP_URL: z.string().trim().default('http://localhost:5000'),
+    APP_URL: z.string().trim().default('http://localhost:4000'),
     SMTP_HOST: z.string().trim().optional(),
     SMTP_PORT: z.coerce.number().int().positive().default(587),
     SMTP_SECURE: z
@@ -55,6 +55,7 @@ const envSchema = z
     SMTP_PASS: z.string().trim().optional(),
     SMTP_FROM_EMAIL: z.string().trim().optional(),
     SMTP_FROM_NAME: z.string().trim().default('TaskFlow'),
+    CONTACT_RECEIVER_EMAIL: z.string().trim().optional(),
   })
   .transform((env) => ({
     ...env,

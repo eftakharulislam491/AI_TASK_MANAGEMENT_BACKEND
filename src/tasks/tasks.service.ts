@@ -122,6 +122,9 @@ const taskDetailSelect = {
 
 type TaskListRow = Prisma.TaskGetPayload<{ select: typeof taskListSelect }>;
 type TaskDetailRow = Prisma.TaskGetPayload<{ select: typeof taskDetailSelect }>;
+type OrganizationSettings = {
+  autoAssignOnTaskCreate: boolean;
+};
 
 @Injectable()
 export class TasksService {
@@ -135,6 +138,13 @@ export class TasksService {
 
   async createTask(currentUser: JwtUser, input: CreateTaskInput) {
     const organizationId = this.getOrganizationId(currentUser);
+    const assigneeId =
+      input.assigneeId ??
+      (await this.resolveAutoAssigneeId(
+        organizationId,
+        input.projectId,
+        input,
+      ));
 
     if (input.projectId) {
       await this.assertProjectBelongsToOrganization(
@@ -143,11 +153,8 @@ export class TasksService {
       );
     }
 
-    if (input.assigneeId) {
-      await this.assertActiveOrganizationMember(
-        organizationId,
-        input.assigneeId,
-      );
+    if (assigneeId) {
+      await this.assertActiveOrganizationMember(organizationId, assigneeId);
     }
 
     const task = await this.prisma.$transaction(async (tx) => {
@@ -158,7 +165,7 @@ export class TasksService {
           title: input.title,
           description: input.description,
           priority: input.priority,
-          assigneeId: input.assigneeId,
+          assigneeId,
           reporterId: currentUser.sub,
           deadline: input.deadline,
           estimatedHours: input.estimatedHours,
@@ -177,7 +184,7 @@ export class TasksService {
         action: 'TASK_CREATED',
         metadata: {
           title: input.title,
-          assigneeId: input.assigneeId,
+          assigneeId,
           priority: input.priority,
         },
       });
@@ -378,7 +385,12 @@ export class TasksService {
   ) {
     const organizationId = this.getOrganizationId(currentUser);
     this.assertCanAssignTask(currentUser, organizationId);
-    await this.assertActiveOrganizationMember(organizationId, input.assigneeId);
+    if (input.assigneeId) {
+      await this.assertActiveOrganizationMember(
+        organizationId,
+        input.assigneeId,
+      );
+    }
 
     return this.updateTask(currentUser, taskId, {
       assigneeId: input.assigneeId,
@@ -597,6 +609,179 @@ export class TasksService {
       assigneeName: task.assignee.displayName ?? task.assignee.firstName,
       deadline: task.deadline,
     });
+  }
+
+  private async resolveAutoAssigneeId(
+    organizationId: string,
+    projectId: string | undefined,
+    input: CreateTaskInput,
+  ) {
+    const settings = await this.getOrganizationSettings(organizationId);
+
+    if (!settings.autoAssignOnTaskCreate) {
+      return null;
+    }
+
+    const candidates = await this.getAutoAssignCandidates(
+      organizationId,
+      projectId,
+    );
+    const pool =
+      candidates.length > 0
+        ? candidates
+        : await this.getAutoAssignCandidates(organizationId);
+    const requiredSkills = (input.tags ?? []).map((item) => item.toLowerCase());
+
+    const bestCandidate = pool
+      .map((candidate) => {
+        const abilityTokens = candidate.abilities.flatMap((ability) => [
+          ability.name,
+          ...(ability.keywords ?? []),
+        ]);
+        const normalizedTokens = abilityTokens.map((item) =>
+          item.toLowerCase(),
+        );
+        const matchedSkills = requiredSkills.filter((skill) =>
+          normalizedTokens.some((token) => token.includes(skill)),
+        ).length;
+        const activeHours = candidate.tasksAssigned.reduce(
+          (sum, task) => sum + (task.estimatedHours ?? 5),
+          0,
+        );
+        const workload = Math.min(100, Math.round((activeHours / 40) * 100));
+        const availabilityScore = 100 - workload;
+        const skillScore = requiredSkills.length
+          ? Math.round((matchedSkills / requiredSkills.length) * 100)
+          : 60;
+        const experienceScore = Math.min(
+          100,
+          (candidate.profile?.yearsOfExperience ?? 0) * 12,
+        );
+        const score = Math.round(
+          skillScore * 0.45 + availabilityScore * 0.35 + experienceScore * 0.2,
+        );
+
+        return {
+          id: candidate.id,
+          score,
+          workload,
+          matchedSkills,
+        };
+      })
+      .sort((left, right) => {
+        if (right.score !== left.score) {
+          return right.score - left.score;
+        }
+
+        if (left.workload !== right.workload) {
+          return left.workload - right.workload;
+        }
+
+        return right.matchedSkills - left.matchedSkills;
+      })[0];
+
+    return bestCandidate?.id ?? null;
+  }
+
+  private getAutoAssignCandidates(organizationId: string, projectId?: string) {
+    return this.prisma.user.findMany({
+      where: {
+        memberships: {
+          some: {
+            organizationId,
+            status: 'ACTIVE',
+            role: {
+              in: ['MEMBER', 'TEAM_LEADER'],
+            },
+          },
+        },
+        ...(projectId
+          ? {
+              OR: [
+                {
+                  projectMemberships: {
+                    some: {
+                      projectId,
+                    },
+                  },
+                },
+                {
+                  teamMemberships: {
+                    some: {
+                      team: {
+                        projects: {
+                          some: {
+                            id: projectId,
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                {
+                  teamsLed: {
+                    some: {
+                      projects: {
+                        some: {
+                          id: projectId,
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        profile: {
+          select: {
+            yearsOfExperience: true,
+          },
+        },
+        abilities: {
+          select: {
+            name: true,
+            keywords: true,
+          },
+        },
+        tasksAssigned: {
+          where: {
+            status: {
+              notIn: ['DONE', 'CANCELLED'],
+            },
+          },
+          select: {
+            estimatedHours: true,
+          },
+        },
+      },
+    });
+  }
+
+  private async getOrganizationSettings(
+    organizationId: string,
+  ): Promise<OrganizationSettings> {
+    const organization = await this.prisma.organization.findUnique({
+      where: {
+        id: organizationId,
+      },
+      select: {
+        settings: true,
+      },
+    });
+
+    const settings =
+      organization?.settings &&
+      typeof organization.settings === 'object' &&
+      !Array.isArray(organization.settings)
+        ? (organization.settings as Record<string, unknown>)
+        : {};
+
+    return {
+      autoAssignOnTaskCreate: settings.autoAssignOnTaskCreate === true,
+    };
   }
 
   private mapTaskListItem(task: TaskListRow) {

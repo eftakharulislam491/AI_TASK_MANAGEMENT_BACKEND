@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
+import type { Express, Request, Response } from 'express';
 import helmet from 'helmet';
 import type { Server } from 'node:http';
 import { AppModule } from './app.module';
@@ -25,6 +26,20 @@ async function bootstrap() {
   app.use(helmet());
   app.use(compression());
   app.use(cookieParser());
+  const appUrl = configService.getOrThrow('APP_URL', { infer: true });
+
+  const httpServer = app.getHttpAdapter().getInstance() as Express;
+
+  httpServer.get('/invitations/accept', (req: Request, res: Response) => {
+    const token =
+      typeof req.query.token === 'string' ? req.query.token : undefined;
+    const redirectUrl = token
+      ? `${appUrl}/invite/accept?token=${encodeURIComponent(token)}`
+      : `${appUrl}/invite/accept`;
+
+    return res.redirect(302, redirectUrl);
+  });
+
   app.enableCors({
     origin: nodeEnv === 'production' ? allowedOrigins : true,
     credentials: true,
@@ -49,9 +64,9 @@ async function bootstrap() {
     void shutdown(server, async () => app.close());
   });
 
-  const appUrl = await app.getUrl();
+  const serverUrl = await app.getUrl();
 
-  console.log(`[TaskFlow] Running on: ${appUrl}/api/v1`);
+  console.log(`[TaskFlow] Running on: ${serverUrl}/api/v1`);
   console.log(`[TaskFlow] Environment: ${nodeEnv}`);
 }
 

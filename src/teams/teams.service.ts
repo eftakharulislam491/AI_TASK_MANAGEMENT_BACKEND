@@ -97,7 +97,7 @@ export class TeamsService {
           name: input.name,
           slug: input.slug,
           description: input.description,
-          leaderId: input.leaderId,
+          leaderId: input.leaderId ?? null,
         },
         select: {
           id: true,
@@ -210,7 +210,7 @@ export class TeamsService {
           name: input.name,
           slug: input.slug,
           description: input.description,
-          leaderId: input.leaderId,
+          ...(input.leaderId === undefined ? {} : { leaderId: input.leaderId }),
         },
         select: teamListSelect,
       });
