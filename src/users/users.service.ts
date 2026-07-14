@@ -8,6 +8,8 @@ import {
 import type { Prisma, Role, RoleChangeRequestStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { serializeResponse } from '../common/utils/response';
+import { NotificationsService } from '../notifications/notifications.service';
+import { MailService } from '../mail/mail.service';
 import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 import type {
   CreateRoleChangeRequestInput,
@@ -252,6 +254,8 @@ type Actor = Prisma.UserGetPayload<{
   select: {
     id: true;
     email: true;
+    firstName: true;
+    displayName: true;
     role: true;
     type: true;
     currentOrganizationId: true;
@@ -276,7 +280,11 @@ type RoleChangeRequestRow = Prisma.RoleChangeRequestGetPayload<{
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly mailService: MailService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   async getMe(currentUser: JwtUser) {
     await this.ensureProfileExists(currentUser.sub);
@@ -599,6 +607,9 @@ export class UsersService {
       where: { id: input.targetUserId },
       select: {
         id: true,
+        email: true,
+        firstName: true,
+        displayName: true,
         role: true,
         currentOrganizationId: true,
         memberships: {
@@ -668,6 +679,66 @@ export class UsersService {
         },
         select: roleChangeRequestSelect,
       });
+
+    // Notify Super Admins and Managers
+    const superAdmins = await this.prisma.user.findMany({
+      where: { role: 'SUPER_ADMIN', isActive: true },
+      select: { id: true },
+    });
+
+    const managers = organizationId
+      ? await this.prisma.organizationMembership.findMany({
+          where: {
+            organizationId,
+            status: 'ACTIVE',
+            role: 'MANAGER',
+          },
+          select: { userId: true },
+        })
+      : [];
+
+    const recipientIds = Array.from(
+      new Set([
+        target.id,
+        ...superAdmins.map((u) => u.id),
+        ...managers.map((m) => m.userId),
+      ]),
+    ).filter((id) => id !== actor.id);
+
+    const actorName = this.getUserDisplayName(actor);
+    const targetName = this.getUserDisplayName(target);
+
+    if (recipientIds.length > 0) {
+      const title = 'Role change requested';
+      const body =
+        actor.id === target.id
+          ? `${actorName} requested a role change to ${input.requestedRole}.`
+          : `${actorName} requested to change ${targetName}'s role to ${input.requestedRole}.`;
+
+      await this.notificationsService.createBulkNotifications(recipientIds, {
+        organizationId,
+        type: 'ROLE_CHANGE_REQUESTED',
+        title,
+        body,
+        metadata: {
+          requestId: request.id,
+          requesterId: actor.id,
+          targetUserId: target.id,
+        },
+      });
+    }
+
+    if (target.id !== actor.id) {
+      await this.mailService.sendRoleChangeRequestedEmail({
+        to: target.email,
+        recipientName: targetName,
+        requesterName: actorName,
+        targetName,
+        currentRole,
+        requestedRole: input.requestedRole,
+        reason: input.reason,
+      });
+    }
 
     return serializeResponse({
       success: true,
@@ -750,6 +821,60 @@ export class UsersService {
       });
     });
 
+    const notificationRecipients = [
+      ...new Set([reviewed.requester.id, reviewed.targetUser.id]),
+    ].filter((userId) => userId !== actor.id);
+    const targetName = this.getUserDisplayName(reviewed.targetUser);
+    const requesterName = this.getUserDisplayName(reviewed.requester);
+    const decisionLabel = input.decision.toLowerCase();
+
+    await this.notificationsService.createBulkNotifications(
+      notificationRecipients,
+      {
+        organizationId: reviewed.organizationId ?? undefined,
+        type:
+          input.decision === 'APPROVED'
+            ? 'ROLE_CHANGED'
+            : 'ROLE_CHANGE_REVIEWED',
+        title: `Role change request ${decisionLabel}`,
+        body: `${targetName}'s role change from ${reviewed.currentRole} to ${reviewed.requestedRole} was ${decisionLabel}.`,
+        metadata: {
+          requestId: reviewed.id,
+          targetUserId: reviewed.targetUser.id,
+          decision: input.decision,
+        },
+      },
+    );
+
+    const emailRecipients = [
+      { email: reviewed.targetUser.email, name: targetName },
+      {
+        email: reviewed.requester.email,
+        name: requesterName,
+      },
+    ].filter(
+      (recipient, index, recipients) =>
+        recipient.email !== actor.email &&
+        recipients.findIndex((item) => item.email === recipient.email) ===
+          index,
+    );
+
+    await Promise.all(
+      emailRecipients.map((recipient) =>
+        this.mailService.sendRoleChangeReviewedEmail({
+          to: recipient.email,
+          recipientName: recipient.name,
+          requesterName,
+          targetName,
+          currentRole: reviewed.currentRole,
+          requestedRole: reviewed.requestedRole,
+          reason: reviewed.reason,
+          decision: input.decision,
+          reviewNote: input.reviewNote,
+        }),
+      ),
+    );
+
     return serializeResponse({
       success: true,
       message:
@@ -814,6 +939,8 @@ export class UsersService {
       select: {
         id: true,
         email: true,
+        firstName: true,
+        displayName: true,
         role: true,
         type: true,
         currentOrganizationId: true,
@@ -1332,6 +1459,19 @@ export class UsersService {
 
   private getHighestRole(roles: Role[]) {
     return roles.sort((left, right) => ROLE_RANK[right] - ROLE_RANK[left])[0];
+  }
+
+  private getUserDisplayName(user: {
+    email: string;
+    firstName: string;
+    lastName?: string;
+    displayName: string | null;
+  }) {
+    return (
+      user.displayName ||
+      `${user.firstName} ${user.lastName ?? ''}`.trim() ||
+      user.email
+    );
   }
 
   private toAbilitySlug(value: string) {

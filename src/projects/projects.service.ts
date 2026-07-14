@@ -190,11 +190,15 @@ export class ProjectsService {
 
   async listProjects(currentUser: JwtUser, query: ListProjectsQueryInput) {
     const organizationId = this.getOrganizationId(currentUser);
+    const role = this.getRoleForOrganization(currentUser, organizationId);
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
     const where = {
       organizationId,
+      ...(role === 'MEMBER'
+        ? { tasks: { some: { assigneeId: currentUser.sub } } }
+        : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.teamId ? { teamId: query.teamId } : {}),
       ...(query.search
@@ -235,6 +239,7 @@ export class ProjectsService {
     ]);
     const taskSummaries = await this.getTaskSummaries(
       projects.map((project) => project.id),
+      role === 'MEMBER' ? currentUser.sub : undefined,
     );
 
     return serializeResponse({
@@ -252,12 +257,22 @@ export class ProjectsService {
 
   async getProject(currentUser: JwtUser, projectId: string) {
     const organizationId = this.getOrganizationId(currentUser);
+    const role = this.getRoleForOrganization(currentUser, organizationId);
     const project = await this.getProjectOrThrow(
       organizationId,
       projectId,
       projectDetailSelect,
     );
-    const taskSummaries = await this.getTaskSummaries([project.id]);
+    await this.assertCanViewProject(
+      currentUser,
+      organizationId,
+      project.id,
+      role,
+    );
+    const taskSummaries = await this.getTaskSummaries(
+      [project.id],
+      role === 'MEMBER' ? currentUser.sub : undefined,
+    );
 
     return serializeResponse(
       this.mapProjectDetail(project, taskSummaries.get(project.id)),
@@ -276,7 +291,7 @@ export class ProjectsService {
       ownerId: true,
     } satisfies Prisma.ProjectSelect);
 
-    this.assertCanManageProject(currentUser, organizationId, existing.ownerId);
+    this.assertCanEditProject(currentUser, organizationId, existing.ownerId);
 
     if (input.slug && input.slug !== existing.slug) {
       await this.assertSlugAvailable(organizationId, input.slug, projectId);
@@ -332,12 +347,11 @@ export class ProjectsService {
     input: AddProjectMemberInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
-    const project = await this.getProjectOrThrow(organizationId, projectId, {
+    await this.getProjectOrThrow(organizationId, projectId, {
       id: true,
-      ownerId: true,
     } satisfies Prisma.ProjectSelect);
 
-    this.assertCanManageProject(currentUser, organizationId, project.ownerId);
+    this.assertCanManageProject(currentUser, organizationId);
     await this.assertActiveOrganizationMember(
       organizationId,
       input.userId,
@@ -384,7 +398,7 @@ export class ProjectsService {
       ownerId: true,
     } satisfies Prisma.ProjectSelect);
 
-    this.assertCanManageProject(currentUser, organizationId, project.ownerId);
+    this.assertCanManageProject(currentUser, organizationId);
 
     if (project.ownerId === userId) {
       throw new BadRequestException('Project owner cannot be removed.');
@@ -439,20 +453,30 @@ export class ProjectsService {
       'You must be an active organization member to request leaving a project.',
     );
 
-    const projectMember = await this.prisma.projectMember.findUnique({
-      where: {
-        projectId_userId: {
-          projectId,
-          userId: currentUser.sub,
+    const [projectMember, assignedTask] = await Promise.all([
+      this.prisma.projectMember.findUnique({
+        where: {
+          projectId_userId: {
+            projectId,
+            userId: currentUser.sub,
+          },
         },
-      },
-      select: {
-        id: true,
-      },
-    });
+        select: { id: true },
+      }),
+      this.prisma.task.findFirst({
+        where: {
+          projectId,
+          organizationId,
+          assigneeId: currentUser.sub,
+        },
+        select: { id: true },
+      }),
+    ]);
 
-    if (!projectMember) {
-      throw new ForbiddenException('You are not a member of this project.');
+    if (!projectMember && !assignedTask) {
+      throw new ForbiddenException(
+        'You must be a project member or have an assigned task in this project.',
+      );
     }
 
     const existing = await this.prisma.projectLeaveRequest.findFirst({
@@ -531,11 +555,10 @@ export class ProjectsService {
     const limit = query.limit;
     const skip = (page - 1) * limit;
     const role = this.getRoleForOrganization(currentUser, organizationId);
-    const canReview = role === 'SUPER_ADMIN' || role === 'MANAGER';
     const where = this.buildProjectLeaveRequestWhere(
       organizationId,
       currentUser.sub,
-      canReview,
+      role,
       query,
     );
 
@@ -581,10 +604,11 @@ export class ProjectsService {
       throw new NotFoundException('Leave request not found.');
     }
 
-    this.assertCanManageProject(
+    await this.assertCanReviewLeaveRequest(
       currentUser,
       organizationId,
       request.project.ownerId,
+      request.project.teamId,
     );
 
     if (request.status !== 'PENDING') {
@@ -595,12 +619,21 @@ export class ProjectsService {
 
     const reviewed = await this.prisma.$transaction(async (tx) => {
       if (input.decision === 'APPROVED') {
-        await tx.projectMember.deleteMany({
-          where: {
-            projectId: request.projectId,
-            userId: request.requesterId,
-          },
-        });
+        await Promise.all([
+          tx.projectMember.deleteMany({
+            where: {
+              projectId: request.projectId,
+              userId: request.requesterId,
+            },
+          }),
+          tx.task.updateMany({
+            where: {
+              projectId: request.projectId,
+              assigneeId: request.requesterId,
+            },
+            data: { assigneeId: null },
+          }),
+        ]);
       }
 
       const updated = await tx.projectLeaveRequest.update({
@@ -679,7 +712,7 @@ export class ProjectsService {
   private buildProjectLeaveRequestWhere(
     organizationId: string,
     currentUserId: string,
-    canReview: boolean,
+    role: Role | undefined,
     query: ListProjectLeaveRequestsQueryInput,
   ) {
     const where = {
@@ -688,7 +721,7 @@ export class ProjectsService {
       ...(query.status ? { status: query.status } : {}),
     } satisfies Prisma.ProjectLeaveRequestWhereInput;
 
-    if (!canReview || query.scope === 'mine') {
+    if (query.scope === 'mine') {
       return {
         ...where,
         requesterId: currentUserId,
@@ -696,9 +729,44 @@ export class ProjectsService {
     }
 
     if (query.scope === 'pending') {
+      if (role === 'TEAM_LEADER') {
+        return {
+          ...where,
+          status: query.status ?? 'PENDING',
+          project: {
+            OR: [
+              { ownerId: currentUserId },
+              { team: { leaderId: currentUserId } },
+            ],
+          },
+          ...(query.requesterId ? { requesterId: query.requesterId } : {}),
+        } satisfies Prisma.ProjectLeaveRequestWhereInput;
+      }
+
+      if (role !== 'SUPER_ADMIN' && role !== 'MANAGER') {
+        return {
+          ...where,
+          status: query.status ?? 'PENDING',
+          project: {
+            ownerId: currentUserId,
+          },
+          ...(query.requesterId ? { requesterId: query.requesterId } : {}),
+        } satisfies Prisma.ProjectLeaveRequestWhereInput;
+      }
       return {
         ...where,
         status: query.status ?? 'PENDING',
+        ...(query.requesterId ? { requesterId: query.requesterId } : {}),
+      } satisfies Prisma.ProjectLeaveRequestWhereInput;
+    }
+
+    if (role !== 'SUPER_ADMIN' && role !== 'MANAGER') {
+      return {
+        ...where,
+        OR: [
+          { requesterId: currentUserId },
+          { project: { ownerId: currentUserId } },
+        ],
         ...(query.requesterId ? { requesterId: query.requesterId } : {}),
       } satisfies Prisma.ProjectLeaveRequestWhereInput;
     }
@@ -714,7 +782,7 @@ export class ProjectsService {
     projectId: string,
     requesterId: string,
   ) {
-    const [project, managerMemberships] = await Promise.all([
+    const [project, managerMemberships, superAdmins] = await Promise.all([
       this.prisma.project.findFirst({
         where: {
           id: projectId,
@@ -722,6 +790,7 @@ export class ProjectsService {
         },
         select: {
           ownerId: true,
+          team: { select: { leaderId: true } },
         },
       }),
       this.prisma.organizationMembership.findMany({
@@ -734,11 +803,19 @@ export class ProjectsService {
           userId: true,
         },
       }),
+      this.prisma.user.findMany({
+        where: { role: 'SUPER_ADMIN', isActive: true },
+        select: { id: true },
+      }),
     ]);
 
     return [
-      project?.ownerId,
-      ...managerMemberships.map((membership) => membership.userId),
+      ...new Set([
+        project?.ownerId,
+        project?.team?.leaderId,
+        ...managerMemberships.map((membership) => membership.userId),
+        ...superAdmins.map((user) => user.id),
+      ]),
     ].filter(
       (userId): userId is string => Boolean(userId) && userId !== requesterId,
     );
@@ -821,7 +898,74 @@ export class ProjectsService {
     }
   }
 
-  private assertCanManageProject(
+  private assertCanManageProject(currentUser: JwtUser, organizationId: string) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+
+    if (role === 'SUPER_ADMIN' || role === 'MANAGER') {
+      return;
+    }
+
+    throw new ForbiddenException('You are not allowed to manage this project.');
+  }
+
+  private async assertCanReviewLeaveRequest(
+    currentUser: JwtUser,
+    organizationId: string,
+    ownerId: string,
+    teamId: string | null,
+  ) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+    if (role === 'SUPER_ADMIN' || role === 'MANAGER') return;
+
+    if (role === 'TEAM_LEADER') {
+      if (ownerId === currentUser.sub) return;
+
+      if (teamId) {
+        const ledTeam = await this.prisma.team.findFirst({
+          where: {
+            id: teamId,
+            organizationId,
+            leaderId: currentUser.sub,
+            isActive: true,
+          },
+          select: { id: true },
+        });
+        if (ledTeam) return;
+      }
+    }
+
+    throw new ForbiddenException(
+      'You are not allowed to review this project leave request.',
+    );
+  }
+
+  private async assertCanViewProject(
+    currentUser: JwtUser,
+    organizationId: string,
+    projectId: string,
+    role = this.getRoleForOrganization(currentUser, organizationId),
+  ) {
+    if (role !== 'MEMBER') {
+      return;
+    }
+
+    const assignedTask = await this.prisma.task.findFirst({
+      where: {
+        organizationId,
+        projectId,
+        assigneeId: currentUser.sub,
+      },
+      select: { id: true },
+    });
+
+    if (!assignedTask) {
+      throw new ForbiddenException(
+        'You can only view projects containing tasks assigned to you.',
+      );
+    }
+  }
+
+  private assertCanEditProject(
     currentUser: JwtUser,
     organizationId: string,
     ownerId: string,
@@ -831,12 +975,13 @@ export class ProjectsService {
     if (
       role === 'SUPER_ADMIN' ||
       role === 'MANAGER' ||
+      role === 'TEAM_LEADER' ||
       ownerId === currentUser.sub
     ) {
       return;
     }
 
-    throw new ForbiddenException('You are not allowed to manage this project.');
+    throw new ForbiddenException('You are not allowed to edit this project.');
   }
 
   private async assertSlugAvailable(
@@ -931,7 +1076,7 @@ export class ProjectsService {
     return project;
   }
 
-  private async getTaskSummaries(projectIds: string[]) {
+  private async getTaskSummaries(projectIds: string[], assigneeId?: string) {
     const summaries = new Map<string, Record<TaskStatus, number>>();
 
     for (const projectId of projectIds) {
@@ -948,6 +1093,7 @@ export class ProjectsService {
         projectId: {
           in: projectIds,
         },
+        ...(assigneeId ? { assigneeId } : {}),
       },
       _count: {
         _all: true,
@@ -984,7 +1130,10 @@ export class ProjectsService {
     return {
       ...project,
       memberCount: project._count.members,
-      taskCount: project._count.tasks,
+      taskCount: Object.values(taskSummary).reduce(
+        (total, count) => total + count,
+        0,
+      ),
       taskSummary,
       _count: undefined,
     };
@@ -997,7 +1146,10 @@ export class ProjectsService {
     return {
       ...project,
       memberCount: project._count.members,
-      taskCount: project._count.tasks,
+      taskCount: Object.values(taskSummary).reduce(
+        (total, count) => total + count,
+        0,
+      ),
       taskSummary,
       _count: undefined,
     };

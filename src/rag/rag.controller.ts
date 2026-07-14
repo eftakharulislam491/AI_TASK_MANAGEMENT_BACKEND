@@ -8,10 +8,13 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { AuthenticatedRequest } from '../common/interfaces/authenticated-request.interface';
 import { RedisService } from '../common/services/redis.service';
 import { TenantAccess } from '../common/decorators/tenant-access.decorator';
+import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
 import { TenantAccessGuard } from '../common/guards/tenant-access.guard';
 import { parseWithSchema, ragQuerySchema } from './rag.schemas';
 import { RAGService } from './rag.service';
@@ -28,6 +31,8 @@ export class RAGController {
   ) {}
 
   @Post('ingest/tasks')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN', 'MANAGER')
   ingestTasks(@Req() request: AuthenticatedRequest) {
     return this.ragService.ingestTasksData(
       this.getOrganizationIdFromRequest(request),
@@ -35,6 +40,8 @@ export class RAGController {
   }
 
   @Post('ingest/projects')
+  @UseGuards(RolesGuard)
+  @Roles('SUPER_ADMIN', 'MANAGER')
   ingestProjects(@Req() request: AuthenticatedRequest) {
     return this.ragService.ingestProjectsData(
       this.getOrganizationIdFromRequest(request),
@@ -50,7 +57,11 @@ export class RAGController {
   async query(@Req() request: AuthenticatedRequest, @Body() body: unknown) {
     const parsed = parseWithSchema(ragQuerySchema, body);
     const organizationId = this.getOrganizationIdFromRequest(request);
-    const cacheKey = `rag:query:${organizationId}:${parsed.query}:${
+    const currentUser = this.getUserFromRequest(request);
+    const historyHash = createHash('sha256')
+      .update(JSON.stringify(parsed.history))
+      .digest('hex');
+    const cacheKey = `rag:query:${organizationId}:${currentUser.sub}:${historyHash}:${parsed.query}:${
       parsed.limit ?? 5
     }:${parsed.sourceType || 'all'}:${parsed.asJson ? 'json' : 'text'}`;
     const cachedResult = await this.getCachedAnswer(cacheKey);
@@ -68,6 +79,8 @@ export class RAGController {
       parsed.limit,
       parsed.sourceType,
       parsed.asJson,
+      parsed.history,
+      currentUser,
     );
     await this.cacheAnswer(cacheKey, result);
 
@@ -87,6 +100,14 @@ export class RAGController {
     }
 
     return organizationId;
+  }
+
+  private getUserFromRequest(request: AuthenticatedRequest) {
+    if (!request.user) {
+      throw new ForbiddenException('Authenticated user context is required.');
+    }
+
+    return request.user;
   }
 
   private async getCachedAnswer(

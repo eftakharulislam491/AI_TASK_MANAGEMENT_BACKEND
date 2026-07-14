@@ -17,6 +17,11 @@ type OpenRouterChatResponse = {
   };
 };
 
+type ChatHistoryMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 @Injectable()
 export class LLMService {
   private readonly apiKey?: string;
@@ -37,6 +42,7 @@ export class LLMService {
     prompt: string,
     context: string[],
     asJson = false,
+    history: ChatHistoryMessage[] = [],
   ): Promise<string> {
     if (!this.apiKey) {
       throw new InternalServerErrorException(
@@ -45,9 +51,13 @@ export class LLMService {
     }
 
     const fullPrompt = [
-      `Context information:\n${context.join('\n\n')}`,
+      context.length
+        ? `Workspace context:\n${context.join('\n\n')}`
+        : undefined,
       `Question: ${prompt}`,
-      'Answer based on the context above.',
+      context.length
+        ? 'Use the workspace context for workspace-specific facts.'
+        : 'No workspace records were relevant to this question.',
       asJson ? 'Return only valid JSON. Do not use markdown code fences.' : '',
     ]
       .filter(Boolean)
@@ -68,8 +78,9 @@ export class LLMService {
             {
               role: 'system',
               content:
-                'You are a precise assistant for a task management platform. Use only the provided context and say when context is insufficient.',
+                'You are a helpful general-purpose assistant inside a task management platform. Use supplied workspace context when answering about workspace data, never invent workspace facts, and clearly say when the records are insufficient. For general knowledge questions, answer normally.',
             },
+            ...history,
             {
               role: 'user',
               content: fullPrompt,

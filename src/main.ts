@@ -2,9 +2,12 @@ import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
+import express from 'express';
 import type { Express, Request, Response } from 'express';
 import helmet from 'helmet';
+import { mkdirSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { join } from 'node:path';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { ZodExceptionFilter } from './common/filters/zod-exception.filter';
@@ -29,6 +32,9 @@ async function bootstrap() {
   const appUrl = configService.getOrThrow('APP_URL', { infer: true });
 
   const httpServer = app.getHttpAdapter().getInstance() as Express;
+  const uploadsDirectory = join(process.cwd(), 'uploads');
+  mkdirSync(uploadsDirectory, { recursive: true });
+  httpServer.use('/uploads', express.static(uploadsDirectory));
 
   httpServer.get('/invitations/accept', (req: Request, res: Response) => {
     const token =

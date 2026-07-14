@@ -21,6 +21,8 @@ export const notificationTypeSchema = z.enum([
   'TEAM_MEMBER_ADDED',
   'INVITATION_RECEIVED',
   'ROLE_CHANGED',
+  'ROLE_CHANGE_REQUESTED',
+  'ROLE_CHANGE_REVIEWED',
   'MENTION',
 ]);
 

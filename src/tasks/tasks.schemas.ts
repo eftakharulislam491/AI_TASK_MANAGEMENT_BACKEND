@@ -58,6 +58,8 @@ export const assignTaskSchema = z.object({
   assigneeId: z
     .union([resourceIdValue, z.literal(''), z.null()])
     .transform((value) => (value === '' ? null : value)),
+  aiAssigned: z.boolean().default(false),
+  confidence: z.coerce.number().int().min(0).max(100).nullable().optional(),
 });
 
 export const listTasksQuerySchema = z.object({

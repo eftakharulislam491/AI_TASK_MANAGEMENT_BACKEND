@@ -49,7 +49,7 @@ export class CommentsService {
     input: CreateCommentInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
-    const task = await this.getTaskOrThrow(organizationId, taskId);
+    const task = await this.getTaskOrThrow(currentUser, organizationId, taskId);
 
     const comment = await this.prisma.$transaction(async (tx) => {
       const created = await tx.comment.create({
@@ -102,7 +102,7 @@ export class CommentsService {
     query: ListCommentsQueryInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
-    await this.getTaskOrThrow(organizationId, taskId);
+    await this.getTaskOrThrow(currentUser, organizationId, taskId);
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
@@ -140,7 +140,11 @@ export class CommentsService {
     input: UpdateCommentInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
-    const existing = await this.getCommentOrThrow(organizationId, commentId);
+    const existing = await this.getCommentOrThrow(
+      currentUser,
+      organizationId,
+      commentId,
+    );
 
     if (existing.authorId !== currentUser.sub) {
       throw new ForbiddenException('Only the author can update this comment.');
@@ -164,7 +168,11 @@ export class CommentsService {
 
   async deleteComment(currentUser: JwtUser, commentId: string) {
     const organizationId = this.getOrganizationId(currentUser);
-    const comment = await this.getCommentOrThrow(organizationId, commentId);
+    const comment = await this.getCommentOrThrow(
+      currentUser,
+      organizationId,
+      commentId,
+    );
 
     this.assertCanDeleteComment(currentUser, organizationId, comment.authorId);
 
@@ -220,7 +228,11 @@ export class CommentsService {
     throw new ForbiddenException('You are not allowed to delete this comment.');
   }
 
-  private async getTaskOrThrow(organizationId: string, taskId: string) {
+  private async getTaskOrThrow(
+    currentUser: JwtUser,
+    organizationId: string,
+    taskId: string,
+  ) {
     const task = await this.prisma.task.findFirst({
       where: {
         id: taskId,
@@ -239,10 +251,16 @@ export class CommentsService {
       throw new NotFoundException('Task not found.');
     }
 
+    this.assertCanAccessTask(currentUser, organizationId, task.assigneeId);
+
     return task;
   }
 
-  private async getCommentOrThrow(organizationId: string, commentId: string) {
+  private async getCommentOrThrow(
+    currentUser: JwtUser,
+    organizationId: string,
+    commentId: string,
+  ) {
     const comment = await this.prisma.comment.findFirst({
       where: {
         id: commentId,
@@ -253,6 +271,7 @@ export class CommentsService {
       select: {
         id: true,
         authorId: true,
+        task: { select: { assigneeId: true } },
       },
     });
 
@@ -260,6 +279,23 @@ export class CommentsService {
       throw new NotFoundException('Comment not found.');
     }
 
+    this.assertCanAccessTask(
+      currentUser,
+      organizationId,
+      comment.task.assigneeId,
+    );
+
     return comment;
+  }
+
+  private assertCanAccessTask(
+    currentUser: JwtUser,
+    organizationId: string,
+    assigneeId: string | null,
+  ) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+    if (role !== 'MEMBER' || assigneeId === currentUser.sub) return;
+
+    throw new ForbiddenException('You can only access tasks assigned to you.');
   }
 }

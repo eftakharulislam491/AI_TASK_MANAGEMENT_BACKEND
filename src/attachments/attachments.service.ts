@@ -1,9 +1,13 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import type { Prisma, Role } from '@prisma/client';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { basename, extname, join } from 'node:path';
 import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 import { serializeResponse } from '../common/utils/response';
 import { PrismaService } from '../prisma/prisma.service';
@@ -42,7 +46,11 @@ export class AttachmentsService {
 
   async createAttachment(currentUser: JwtUser, input: CreateAttachmentInput) {
     const organizationId = this.getOrganizationId(currentUser);
-    await this.assertParentBelongsToOrganization(organizationId, input);
+    await this.assertParentBelongsToOrganization(
+      currentUser,
+      organizationId,
+      input,
+    );
 
     const attachment = await this.prisma.attachment.create({
       data: {
@@ -65,9 +73,57 @@ export class AttachmentsService {
     });
   }
 
+  async uploadTaskAttachment(
+    currentUser: JwtUser,
+    taskId: string,
+    file:
+      | {
+          originalname: string;
+          mimetype: string;
+          size: number;
+          buffer: Buffer;
+        }
+      | undefined,
+    publicBaseUrl: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('A file is required.');
+    }
+
+    const organizationId = this.getOrganizationId(currentUser);
+    await this.assertTaskBelongsToOrganization(
+      currentUser,
+      organizationId,
+      taskId,
+    );
+    const uploadsDirectory = join(process.cwd(), 'uploads');
+    await mkdir(uploadsDirectory, { recursive: true });
+    const storedName = `${randomUUID()}${extname(file.originalname).toLowerCase()}`;
+    const storedPath = join(uploadsDirectory, storedName);
+    await writeFile(storedPath, file.buffer);
+
+    try {
+      return await this.createAttachment(currentUser, {
+        entityType: 'TASK',
+        taskId,
+        fileName: file.originalname,
+        fileUrl: `${publicBaseUrl}/uploads/${storedName}`,
+        fileSize: file.size,
+        mimeType: file.mimetype,
+      });
+    } catch (error) {
+      await unlink(storedPath).catch(() => undefined);
+      throw error;
+    }
+  }
+
   async listTaskAttachments(currentUser: JwtUser, taskId: string) {
     const organizationId = this.getOrganizationId(currentUser);
-    await this.assertTaskBelongsToOrganization(organizationId, taskId);
+    await this.assertTaskBelongsToOrganization(
+      currentUser,
+      organizationId,
+      taskId,
+    );
 
     const attachments = await this.prisma.attachment.findMany({
       where: {
@@ -119,6 +175,7 @@ export class AttachmentsService {
       select: {
         id: true,
         uploadedById: true,
+        fileUrl: true,
       },
     });
 
@@ -137,6 +194,13 @@ export class AttachmentsService {
         id: attachmentId,
       },
     });
+
+    const localFileName = this.getLocalUploadName(attachment.fileUrl);
+    if (localFileName) {
+      await unlink(join(process.cwd(), 'uploads', localFileName)).catch(
+        () => undefined,
+      );
+    }
 
     return serializeResponse({
       message: 'Attachment deleted successfully.',
@@ -187,11 +251,16 @@ export class AttachmentsService {
   }
 
   private async assertParentBelongsToOrganization(
+    currentUser: JwtUser,
     organizationId: string,
     input: CreateAttachmentInput,
   ) {
     if (input.entityType === 'TASK' && input.taskId) {
-      await this.assertTaskBelongsToOrganization(organizationId, input.taskId);
+      await this.assertTaskBelongsToOrganization(
+        currentUser,
+        organizationId,
+        input.taskId,
+      );
       return;
     }
 
@@ -205,12 +274,19 @@ export class AttachmentsService {
         },
         select: {
           id: true,
+          task: { select: { assigneeId: true } },
         },
       });
 
       if (!comment) {
         throw new NotFoundException('Comment not found.');
       }
+
+      this.assertCanAccessTask(
+        currentUser,
+        organizationId,
+        comment.task.assigneeId,
+      );
 
       return;
     }
@@ -233,6 +309,7 @@ export class AttachmentsService {
   }
 
   private async assertTaskBelongsToOrganization(
+    currentUser: JwtUser,
     organizationId: string,
     taskId: string,
   ) {
@@ -243,11 +320,35 @@ export class AttachmentsService {
       },
       select: {
         id: true,
+        assigneeId: true,
       },
     });
 
     if (!task) {
       throw new NotFoundException('Task not found.');
+    }
+
+    this.assertCanAccessTask(currentUser, organizationId, task.assigneeId);
+  }
+
+  private assertCanAccessTask(
+    currentUser: JwtUser,
+    organizationId: string,
+    assigneeId: string | null,
+  ) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+    if (role !== 'MEMBER' || assigneeId === currentUser.sub) return;
+
+    throw new ForbiddenException('You can only access tasks assigned to you.');
+  }
+
+  private getLocalUploadName(fileUrl: string) {
+    try {
+      const url = new URL(fileUrl);
+      if (!url.pathname.startsWith('/uploads/')) return null;
+      return basename(url.pathname);
+    } catch {
+      return null;
     }
   }
 }

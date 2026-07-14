@@ -91,6 +91,8 @@ enum NotificationType {
   PROJECT_LEAVE_REVIEWED
   TEAM_MEMBER_ADDED
   INVITATION_RECEIVED
+  ROLE_CHANGE_REQUESTED
+  ROLE_CHANGE_REVIEWED
   ROLE_CHANGED
   MENTION
 }
@@ -540,7 +542,7 @@ model DocumentEmbedding {
   sourceLabel    String?
   content        String
   metadata       Json                         @default("{}")
-  embedding      Unsupported("vector(1536)")?
+  embedding      Unsupported("vector(2048)")?
   isDeleted      Boolean                      @default(false)
   deletedAt      DateTime?
   createdAt      DateTime                     @default(now())

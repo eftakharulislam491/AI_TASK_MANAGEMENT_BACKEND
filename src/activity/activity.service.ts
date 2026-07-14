@@ -121,7 +121,11 @@ export class ActivityService {
   ) {
     const organizationId = this.getOrganizationId(currentUser);
     this.assertValidDateRange(query.from, query.to);
-    await this.assertTaskBelongsToOrganization(organizationId, taskId);
+    await this.assertTaskBelongsToOrganization(
+      currentUser,
+      organizationId,
+      taskId,
+    );
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
@@ -183,6 +187,7 @@ export class ActivityService {
   }
 
   private async assertTaskBelongsToOrganization(
+    currentUser: JwtUser,
     organizationId: string,
     taskId: string,
   ) {
@@ -193,11 +198,31 @@ export class ActivityService {
       },
       select: {
         id: true,
+        assigneeId: true,
       },
     });
 
     if (!task) {
       throw new NotFoundException('Task not found.');
     }
+
+    if (
+      this.getRoleForOrganization(currentUser, organizationId) === 'MEMBER' &&
+      task.assigneeId !== currentUser.sub
+    ) {
+      throw new ForbiddenException(
+        'You can only access tasks assigned to you.',
+      );
+    }
+  }
+
+  private getRoleForOrganization(currentUser: JwtUser, organizationId: string) {
+    if (currentUser.role === 'SUPER_ADMIN') return 'SUPER_ADMIN';
+
+    return currentUser.memberships.find(
+      (membership) =>
+        membership.organizationId === organizationId &&
+        membership.status === 'ACTIVE',
+    )?.role;
   }
 }

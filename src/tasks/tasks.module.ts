@@ -4,6 +4,7 @@ import { AuthModule } from '../auth/auth.module';
 import { MailModule } from '../mail/mail.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { RAGModule } from '../rag/rag.module';
 import { TasksController } from './tasks.controller';
 import { TasksService } from './tasks.service';
 
@@ -14,6 +15,7 @@ import { TasksService } from './tasks.service';
     MailModule,
     NotificationsModule,
     PrismaModule,
+    RAGModule,
   ],
   controllers: [TasksController],
   providers: [TasksService],

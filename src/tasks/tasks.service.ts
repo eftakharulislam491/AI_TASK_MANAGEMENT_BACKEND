@@ -1,6 +1,7 @@
 import {
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -12,6 +13,7 @@ import type { AppEnv } from '../config/env';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RAGService } from '../rag/rag.service';
 import type {
   AssignTaskInput,
   CreateTaskInput,
@@ -126,18 +128,43 @@ type OrganizationSettings = {
   autoAssignOnTaskCreate: boolean;
 };
 
+type AssignmentCandidate = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  displayName: string | null;
+  role: Role;
+  profile: {
+    currentJobTitle: string | null;
+    yearsOfExperience: number | null;
+  } | null;
+  abilities: Array<{ name: string; keywords: string[] }>;
+  tasksAssigned: Array<{ estimatedHours: number | null }>;
+};
+
+type RankedCandidate = {
+  candidate: AssignmentCandidate;
+  score: number;
+  workload: number;
+  matchedSkills: string[];
+};
+
 @Injectable()
 export class TasksService {
+  private readonly logger = new Logger(TasksService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly activityService: ActivityService,
     private readonly notificationsService: NotificationsService,
     private readonly mailService: MailService,
     private readonly configService: ConfigService<AppEnv, true>,
+    private readonly ragService: RAGService,
   ) {}
 
   async createTask(currentUser: JwtUser, input: CreateTaskInput) {
     const organizationId = this.getOrganizationId(currentUser);
+    this.assertCanCreateTask(currentUser, organizationId);
     const assigneeId =
       input.assigneeId ??
       (await this.resolveAutoAssigneeId(
@@ -200,6 +227,7 @@ export class TasksService {
     if (task?.assigneeId) {
       await this.notifyTaskAssigned(task);
     }
+    void this.syncTaskIndex(organizationId, task!.id);
 
     return serializeResponse({
       message: 'Task created successfully.',
@@ -209,10 +237,16 @@ export class TasksService {
 
   async listTasks(currentUser: JwtUser, query: ListTasksQueryInput) {
     const organizationId = this.getOrganizationId(currentUser);
+    const role = this.getRoleForOrganization(currentUser, organizationId);
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
-    const where = this.buildTaskWhere(organizationId, query);
+    const where = this.buildTaskWhere(
+      organizationId,
+      query,
+      role,
+      currentUser.sub,
+    );
 
     const [tasks, total] = await Promise.all([
       this.prisma.task.findMany({
@@ -250,6 +284,7 @@ export class TasksService {
       taskId,
       taskDetailSelect,
     );
+    this.assertCanViewTask(currentUser, organizationId, task.assigneeId);
 
     return serializeResponse(this.mapTaskDetail(task));
   }
@@ -258,6 +293,7 @@ export class TasksService {
     currentUser: JwtUser,
     taskId: string,
     input: UpdateTaskInput,
+    aiMetadata?: Prisma.InputJsonValue,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
     const existing = await this.getTaskOrThrow(organizationId, taskId, {
@@ -267,6 +303,12 @@ export class TasksService {
       status: true,
       title: true,
     } satisfies Prisma.TaskSelect);
+    this.assertCanUpdateTask(
+      currentUser,
+      organizationId,
+      existing.assigneeId,
+      input,
+    );
 
     if (input.projectId) {
       await this.assertProjectBelongsToOrganization(
@@ -297,6 +339,7 @@ export class TasksService {
           deadline: input.deadline,
           estimatedHours: input.estimatedHours,
           tags: input.tags,
+          aiMetadata,
         },
         select: taskListSelect,
       });
@@ -363,6 +406,7 @@ export class TasksService {
     if (input.assigneeId && input.assigneeId !== existing.assigneeId) {
       await this.notifyTaskAssigned(updated);
     }
+    void this.syncTaskIndex(organizationId, updated.id);
 
     return serializeResponse({
       message: 'Task updated successfully.',
@@ -392,8 +436,100 @@ export class TasksService {
       );
     }
 
-    return this.updateTask(currentUser, taskId, {
-      assigneeId: input.assigneeId,
+    return this.updateTask(
+      currentUser,
+      taskId,
+      { assigneeId: input.assigneeId },
+      input.aiAssigned
+        ? {
+            aiAssigned: true,
+            confidence: input.confidence ?? null,
+            assignedAt: new Date().toISOString(),
+          }
+        : { aiAssigned: false },
+    );
+  }
+
+  async getAssignmentSuggestions(currentUser: JwtUser, taskId: string) {
+    const organizationId = this.getOrganizationId(currentUser);
+    this.assertCanAssignTask(currentUser, organizationId);
+    const task = await this.getTaskOrThrow(organizationId, taskId, {
+      id: true,
+      projectId: true,
+      title: true,
+      description: true,
+      tags: true,
+    } satisfies Prisma.TaskSelect);
+    const projectCandidates = await this.getAutoAssignCandidates(
+      organizationId,
+      task.projectId ?? undefined,
+    );
+    const candidates = projectCandidates.length
+      ? projectCandidates
+      : await this.getAutoAssignCandidates(organizationId);
+    const ranked = this.rankAssignmentCandidates(task.tags, candidates);
+
+    if (ranked.length === 0) {
+      return serializeResponse({
+        suggestions: [],
+        analysisMethod: 'AI',
+        message: 'No eligible assignment candidates were found.',
+      });
+    }
+
+    try {
+      const aiResult = await this.ragService.generateStructuredResponse(
+        [
+          'Rank the eligible candidates for this task.',
+          'Return JSON with a suggestions array.',
+          'Each suggestion must contain userId, score (0-100), and a concise reason.',
+          'Use only candidate IDs supplied in the context.',
+          'Consider task meaning, skill relevance, workload, and experience.',
+        ].join(' '),
+        [
+          JSON.stringify({
+            task: {
+              title: task.title,
+              description: task.description,
+              requiredSkills: task.tags,
+            },
+            candidates: ranked.map((item) => ({
+              userId: item.candidate.id,
+              skills: item.candidate.abilities.flatMap((ability) => [
+                ability.name,
+                ...ability.keywords,
+              ]),
+              workload: item.workload,
+              yearsOfExperience: item.candidate.profile?.yearsOfExperience ?? 0,
+              baselineScore: item.score,
+            })),
+          }),
+        ],
+      );
+      const suggestions = this.mapAiAssignmentSuggestions(aiResult, ranked);
+
+      if (suggestions.length > 0) {
+        return serializeResponse({
+          suggestions,
+          analysisMethod: 'AI',
+        });
+      }
+    } catch (error) {
+      this.logger.warn(
+        `AI assignment ranking failed for task ${taskId}; using the backend scoring fallback. ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    return serializeResponse({
+      suggestions: ranked
+        .slice(0, 5)
+        .map((item) =>
+          this.mapRankedCandidate(item, item.score, this.fallbackReason(item)),
+        ),
+      analysisMethod: 'HEURISTIC_FALLBACK',
+      message: 'AI provider unavailable; backend scoring fallback was used.',
     });
   }
 
@@ -411,19 +547,29 @@ export class TasksService {
         id: taskId,
       },
     });
+    void this.syncTaskIndex(organizationId, taskId);
 
     return serializeResponse({
       message: 'Task deleted successfully.',
     });
   }
 
-  private buildTaskWhere(organizationId: string, query: ListTasksQueryInput) {
+  private buildTaskWhere(
+    organizationId: string,
+    query: ListTasksQueryInput,
+    role?: string,
+    userId?: string,
+  ) {
     return {
       organizationId,
       ...(query.status ? { status: query.status } : {}),
       ...(query.priority ? { priority: query.priority } : {}),
       ...(query.projectId ? { projectId: query.projectId } : {}),
-      ...(query.assigneeId ? { assigneeId: query.assigneeId } : {}),
+      ...(role === 'MEMBER'
+        ? { assigneeId: userId }
+        : query.assigneeId
+          ? { assigneeId: query.assigneeId }
+          : {}),
       ...(query.reporterId ? { reporterId: query.reporterId } : {}),
       ...(query.tags?.length
         ? {
@@ -510,12 +656,72 @@ export class TasksService {
     if (
       role === 'SUPER_ADMIN' ||
       role === 'MANAGER' ||
-      reporterId === currentUser.sub
+      (role === 'TEAM_LEADER' && reporterId === currentUser.sub)
     ) {
       return;
     }
 
     throw new ForbiddenException('You are not allowed to delete this task.');
+  }
+
+  private assertCanCreateTask(currentUser: JwtUser, organizationId: string) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+
+    if (
+      role === 'SUPER_ADMIN' ||
+      role === 'MANAGER' ||
+      role === 'TEAM_LEADER'
+    ) {
+      return;
+    }
+
+    throw new ForbiddenException('You are not allowed to create tasks.');
+  }
+
+  private assertCanViewTask(
+    currentUser: JwtUser,
+    organizationId: string,
+    assigneeId: string | null,
+  ) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+
+    if (role !== 'MEMBER' || assigneeId === currentUser.sub) {
+      return;
+    }
+
+    throw new ForbiddenException('You can only view tasks assigned to you.');
+  }
+
+  private assertCanUpdateTask(
+    currentUser: JwtUser,
+    organizationId: string,
+    assigneeId: string | null,
+    input: UpdateTaskInput,
+  ) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+
+    if (
+      role === 'SUPER_ADMIN' ||
+      role === 'MANAGER' ||
+      role === 'TEAM_LEADER'
+    ) {
+      return;
+    }
+
+    const changedFields = Object.keys(input);
+    const isOwnStatusOnlyUpdate =
+      role === 'MEMBER' &&
+      assigneeId === currentUser.sub &&
+      changedFields.length === 1 &&
+      changedFields[0] === 'status';
+
+    if (isOwnStatusOnlyUpdate) {
+      return;
+    }
+
+    throw new ForbiddenException(
+      'Members can only update the status of tasks assigned to them.',
+    );
   }
 
   private async assertProjectBelongsToOrganization(
@@ -611,6 +817,18 @@ export class TasksService {
     });
   }
 
+  private async syncTaskIndex(organizationId: string, taskId: string) {
+    try {
+      await this.ragService.syncTaskData(organizationId, taskId);
+    } catch (error) {
+      this.logger.error(
+        `Could not synchronize task ${taskId} with the AI knowledge base: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   private async resolveAutoAssigneeId(
     organizationId: string,
     projectId: string | undefined,
@@ -630,57 +848,11 @@ export class TasksService {
       candidates.length > 0
         ? candidates
         : await this.getAutoAssignCandidates(organizationId);
-    const requiredSkills = (input.tags ?? []).map((item) => item.toLowerCase());
 
-    const bestCandidate = pool
-      .map((candidate) => {
-        const abilityTokens = candidate.abilities.flatMap((ability) => [
-          ability.name,
-          ...(ability.keywords ?? []),
-        ]);
-        const normalizedTokens = abilityTokens.map((item) =>
-          item.toLowerCase(),
-        );
-        const matchedSkills = requiredSkills.filter((skill) =>
-          normalizedTokens.some((token) => token.includes(skill)),
-        ).length;
-        const activeHours = candidate.tasksAssigned.reduce(
-          (sum, task) => sum + (task.estimatedHours ?? 5),
-          0,
-        );
-        const workload = Math.min(100, Math.round((activeHours / 40) * 100));
-        const availabilityScore = 100 - workload;
-        const skillScore = requiredSkills.length
-          ? Math.round((matchedSkills / requiredSkills.length) * 100)
-          : 60;
-        const experienceScore = Math.min(
-          100,
-          (candidate.profile?.yearsOfExperience ?? 0) * 12,
-        );
-        const score = Math.round(
-          skillScore * 0.45 + availabilityScore * 0.35 + experienceScore * 0.2,
-        );
-
-        return {
-          id: candidate.id,
-          score,
-          workload,
-          matchedSkills,
-        };
-      })
-      .sort((left, right) => {
-        if (right.score !== left.score) {
-          return right.score - left.score;
-        }
-
-        if (left.workload !== right.workload) {
-          return left.workload - right.workload;
-        }
-
-        return right.matchedSkills - left.matchedSkills;
-      })[0];
-
-    return bestCandidate?.id ?? null;
+    return (
+      this.rankAssignmentCandidates(input.tags ?? [], pool)[0]?.candidate.id ??
+      null
+    );
   }
 
   private getAutoAssignCandidates(organizationId: string, projectId?: string) {
@@ -735,8 +907,13 @@ export class TasksService {
       },
       select: {
         id: true,
+        firstName: true,
+        lastName: true,
+        displayName: true,
+        role: true,
         profile: {
           select: {
+            currentJobTitle: true,
             yearsOfExperience: true,
           },
         },
@@ -758,6 +935,128 @@ export class TasksService {
         },
       },
     });
+  }
+
+  private rankAssignmentCandidates(
+    requiredSkills: string[],
+    candidates: AssignmentCandidate[],
+  ): RankedCandidate[] {
+    const required = requiredSkills.map((item) => item.toLowerCase());
+
+    return candidates
+      .map((candidate) => {
+        const abilityTokens = candidate.abilities.flatMap((ability) => [
+          ability.name,
+          ...ability.keywords,
+        ]);
+        const normalizedTokens = abilityTokens.map((item) =>
+          item.toLowerCase(),
+        );
+        const matchedSkills = requiredSkills.filter((_, index) =>
+          normalizedTokens.some((token) => token.includes(required[index])),
+        );
+        const activeHours = candidate.tasksAssigned.reduce(
+          (sum, task) => sum + (task.estimatedHours ?? 5),
+          0,
+        );
+        const workload = Math.min(100, Math.round((activeHours / 40) * 100));
+        const skillScore = required.length
+          ? Math.round((matchedSkills.length / required.length) * 100)
+          : 60;
+        const experienceScore = Math.min(
+          100,
+          (candidate.profile?.yearsOfExperience ?? 0) * 12,
+        );
+
+        return {
+          candidate,
+          workload,
+          matchedSkills,
+          score: Math.round(
+            skillScore * 0.45 + (100 - workload) * 0.35 + experienceScore * 0.2,
+          ),
+        };
+      })
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          left.workload - right.workload ||
+          right.matchedSkills.length - left.matchedSkills.length,
+      );
+  }
+
+  private mapAiAssignmentSuggestions(
+    result: unknown,
+    ranked: RankedCandidate[],
+  ) {
+    const value = result as { suggestions?: unknown };
+    const raw = Array.isArray(result)
+      ? result
+      : Array.isArray(value?.suggestions)
+        ? value.suggestions
+        : [];
+    const candidatesById = new Map(
+      ranked.map((item) => [item.candidate.id, item]),
+    );
+
+    return raw
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return null;
+        const item = entry as Record<string, unknown>;
+        const userId = typeof item.userId === 'string' ? item.userId : '';
+        const rankedCandidate = candidatesById.get(userId);
+        if (!rankedCandidate) return null;
+        const score = Number(item.score);
+        const safeScore = Number.isFinite(score)
+          ? Math.max(0, Math.min(100, Math.round(score)))
+          : rankedCandidate.score;
+        const reason =
+          typeof item.reason === 'string' && item.reason.trim()
+            ? item.reason.trim()
+            : this.fallbackReason(rankedCandidate);
+
+        return this.mapRankedCandidate(rankedCandidate, safeScore, reason);
+      })
+      .filter((item) => item !== null)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 5);
+  }
+
+  private mapRankedCandidate(
+    item: RankedCandidate,
+    score: number,
+    reason: string,
+  ) {
+    const candidate = item.candidate;
+    const name =
+      candidate.displayName ??
+      `${candidate.firstName} ${candidate.lastName}`.trim();
+
+    return {
+      user: {
+        id: candidate.id,
+        name,
+        firstName: candidate.firstName,
+        lastName: candidate.lastName,
+        displayName: candidate.displayName,
+        role: candidate.role,
+        title: candidate.profile?.currentJobTitle ?? '',
+        skills: candidate.abilities.map((ability) => ability.name),
+        experience: candidate.profile?.yearsOfExperience ?? 0,
+        capacity: item.workload,
+      },
+      score,
+      matchedSkills: item.matchedSkills,
+      reason,
+    };
+  }
+
+  private fallbackReason(item: RankedCandidate) {
+    return item.matchedSkills.length
+      ? `Matches ${item.matchedSkills.length} required skill${
+          item.matchedSkills.length === 1 ? '' : 's'
+        } with ${100 - item.workload}% availability.`
+      : `Has ${100 - item.workload}% availability for assignment review.`;
   }
 
   private async getOrganizationSettings(

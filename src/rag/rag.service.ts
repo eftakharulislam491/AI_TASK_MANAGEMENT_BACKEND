@@ -5,6 +5,7 @@ import { EmbeddingService } from './embedding.service';
 import { IndexingService } from './indexing.service';
 import { LLMService } from './llm.service';
 import type { RagSourceType } from './rag.schemas';
+import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 
 type RetrievedDocument = {
   id: string;
@@ -35,14 +36,43 @@ export class RAGService {
     return this.indexingService.indexProjectsData(organizationId);
   }
 
+  syncTaskData(organizationId: string, taskId: string) {
+    return this.indexingService.syncTaskData(organizationId, taskId);
+  }
+
   async retrieveRelevantDocuments(
     organizationId: string,
     query: string,
     limit = 5,
     sourceType?: RagSourceType,
+    currentUser?: JwtUser,
   ) {
     const queryEmbedding = await this.embeddingService.generateEmbedding(query);
     const vectorLiteral = this.indexingService.toVectorLiteral(queryEmbedding);
+    const role = currentUser
+      ? this.getRoleForOrganization(currentUser, organizationId)
+      : undefined;
+    const accessFilter =
+      role === 'MEMBER' && currentUser
+        ? Prisma.sql`
+            AND (
+              (
+                "sourceType" = 'TASK'
+                AND "metadata"->>'assigneeId' = ${currentUser.sub}
+              )
+              OR (
+                "sourceType" = 'PROJECT'
+                AND "sourceId" IN (
+                  SELECT DISTINCT "projectId"
+                  FROM "Task"
+                  WHERE "organizationId" = ${organizationId}
+                    AND "assigneeId" = ${currentUser.sub}
+                    AND "projectId" IS NOT NULL
+                )
+              )
+            )
+          `
+        : Prisma.empty;
 
     return this.prisma.$queryRaw<RetrievedDocument[]>(
       Prisma.sql`
@@ -62,6 +92,7 @@ export class RAGService {
           AND "isDeleted" = false
           AND "embedding" IS NOT NULL
           ${sourceType ? Prisma.sql`AND "sourceType" = ${sourceType}` : Prisma.empty}
+          ${accessFilter}
         ORDER BY "embedding" <=> CAST(${vectorLiteral} AS vector)
         LIMIT ${limit}
       `,
@@ -74,18 +105,22 @@ export class RAGService {
     limit = 5,
     sourceType?: RagSourceType,
     asJson = false,
+    history: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    currentUser?: JwtUser,
   ) {
     const documents = await this.retrieveRelevantDocuments(
       organizationId,
       query,
       limit,
       sourceType,
+      currentUser,
     );
     const context = documents.map((document) => document.content);
     const rawAnswer = await this.llmService.generateResponse(
       query,
       context,
       asJson,
+      history,
     );
     const answer = asJson ? this.parseJsonAnswer(rawAnswer) : rawAnswer;
 
@@ -102,6 +137,16 @@ export class RAGService {
       })),
       contextUsed: context.length,
     };
+  }
+
+  async generateStructuredResponse(prompt: string, context: string[]) {
+    const rawAnswer = await this.llmService.generateResponse(
+      prompt,
+      context,
+      true,
+    );
+
+    return this.parseJsonAnswer(rawAnswer);
   }
 
   async getStats(organizationId: string) {
@@ -153,5 +198,15 @@ export class RAGService {
         'LLM response was not valid JSON after cleanup.',
       );
     }
+  }
+
+  private getRoleForOrganization(currentUser: JwtUser, organizationId: string) {
+    if (currentUser.role === 'SUPER_ADMIN') return 'SUPER_ADMIN';
+
+    return currentUser.memberships.find(
+      (membership) =>
+        membership.organizationId === organizationId &&
+        membership.status === 'ACTIVE',
+    )?.role;
   }
 }

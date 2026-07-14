@@ -5,8 +5,13 @@ import {
   Get,
   Param,
   Post,
+  Req,
+  UploadedFile,
+  UseInterceptors,
   UseGuards,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { Request } from 'express';
 import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { TenantAccess } from '../common/decorators/tenant-access.decorator';
@@ -30,6 +35,35 @@ export class AttachmentsController {
     return this.attachmentsService.createAttachment(
       currentUser,
       parseWithSchema(createAttachmentSchema, body),
+    );
+  }
+
+  @Post('attachments/upload')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 10 * 1024 * 1024 } }),
+  )
+  uploadTaskAttachment(
+    @CurrentUser() currentUser: JwtUser,
+    @Body('taskId') taskId: unknown,
+    @UploadedFile()
+    file:
+      | {
+          originalname: string;
+          mimetype: string;
+          size: number;
+          buffer: Buffer;
+        }
+      | undefined,
+    @Req() request: Request,
+  ) {
+    const host = request.get('host');
+    const publicBaseUrl = host ? `${request.protocol}://${host}` : '';
+
+    return this.attachmentsService.uploadTaskAttachment(
+      currentUser,
+      parseWithSchema(resourceIdValue, taskId),
+      file,
+      publicBaseUrl,
     );
   }
 

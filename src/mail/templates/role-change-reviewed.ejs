@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f4f5;font-family:Arial,sans-serif;color:#18181b">
+    <div style="max-width:600px;margin:32px auto;background:#ffffff;border-radius:12px;padding:32px">
+      <h2 style="margin-top:0">Role change request <%= decision ? decision.toLowerCase() : 'reviewed' %></h2>
+      <p>Hello <%= recipientName || targetName %>,</p>
+      <p>The request to change <strong><%= targetName %></strong> from <strong><%= currentRole %></strong> to <strong><%= requestedRole %></strong> was <strong><%= decision ? decision.toLowerCase() : 'reviewed' %></strong>.</p>
+      <% if (reviewNote) { %><p>Review note: <%= reviewNote %></p><% } %>
+      <p><a href="<%= requestsUrl %>" style="display:inline-block;background:#18181b;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">View request</a></p>
+      <p style="color:#71717a;font-size:12px"><%= appName %></p>
+    </div>
+  </body>
+</html>

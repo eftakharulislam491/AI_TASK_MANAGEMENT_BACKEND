@@ -43,12 +43,26 @@ type DailyDigestEmailInput = {
   tasks: DailyDigestTask[];
 };
 
+type RoleChangeEmailInput = {
+  to: string;
+  recipientName?: string;
+  requesterName: string;
+  targetName: string;
+  currentRole: string;
+  requestedRole: string;
+  reason?: string | null;
+  decision?: 'APPROVED' | 'REJECTED';
+  reviewNote?: string | null;
+};
+
 type TemplateName =
   | 'invitation'
   | 'task-assigned'
   | 'deadline-reminder'
   | 'overdue-task'
-  | 'daily-digest';
+  | 'daily-digest'
+  | 'role-change-requested'
+  | 'role-change-reviewed';
 
 @Injectable()
 export class MailService {
@@ -128,6 +142,30 @@ export class MailService {
           ...task,
           deadline: task.deadline ? this.formatDate(task.deadline) : undefined,
         })),
+        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
+      }),
+    });
+  }
+
+  async sendRoleChangeRequestedEmail(input: RoleChangeEmailInput) {
+    await this.sendMail({
+      to: input.to,
+      subject: `Role change requested: ${input.currentRole} to ${input.requestedRole}`,
+      html: await this.renderTemplate('role-change-requested', {
+        ...input,
+        requestsUrl: `${this.configService.get('APP_URL', { infer: true })}/dashboard/requests`,
+        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
+      }),
+    });
+  }
+
+  async sendRoleChangeReviewedEmail(input: RoleChangeEmailInput) {
+    await this.sendMail({
+      to: input.to,
+      subject: `Role change request ${input.decision?.toLowerCase()}`,
+      html: await this.renderTemplate('role-change-reviewed', {
+        ...input,
+        requestsUrl: `${this.configService.get('APP_URL', { infer: true })}/dashboard/requests`,
         appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });

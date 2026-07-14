@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+  <body style="margin:0;background:#f4f4f5;font-family:Arial,sans-serif;color:#18181b">
+    <div style="max-width:600px;margin:32px auto;background:#ffffff;border-radius:12px;padding:32px">
+      <h2 style="margin-top:0">Role change requested</h2>
+      <p>Hello <%= recipientName || targetName %>,</p>
+      <p><strong><%= requesterName %></strong> requested a role change for <strong><%= targetName %></strong>.</p>
+      <p><strong><%= currentRole %></strong> &rarr; <strong><%= requestedRole %></strong></p>
+      <% if (reason) { %><p>Reason: <%= reason %></p><% } %>
+      <p><a href="<%= requestsUrl %>" style="display:inline-block;background:#18181b;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none">View request</a></p>
+      <p style="color:#71717a;font-size:12px"><%= appName %></p>
+    </div>
+  </body>
+</html>

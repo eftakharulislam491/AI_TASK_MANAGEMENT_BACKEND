@@ -66,6 +66,17 @@ export class TasksController {
     );
   }
 
+  @Get(':taskId/assignment-suggestions')
+  getAssignmentSuggestions(
+    @CurrentUser() currentUser: JwtUser,
+    @Param('taskId') taskId: string,
+  ) {
+    return this.tasksService.getAssignmentSuggestions(
+      currentUser,
+      parseWithSchema(resourceIdValue, taskId),
+    );
+  }
+
   @Patch(':taskId')
   updateTask(
     @CurrentUser() currentUser: JwtUser,

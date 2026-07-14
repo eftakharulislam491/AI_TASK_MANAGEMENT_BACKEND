@@ -15,6 +15,8 @@ type OpenRouterEmbeddingResponse = {
   };
 };
 
+export const EMBEDDING_DIMENSIONS = 2048;
+
 @Injectable()
 export class EmbeddingService {
   private readonly apiKey?: string;
@@ -73,9 +75,9 @@ export class EmbeddingService {
       );
     }
 
-    if (embedding.length !== 1536) {
+    if (embedding.length !== EMBEDDING_DIMENSIONS) {
       throw new BadGatewayException(
-        `Expected 1536-dimensional embedding, received ${embedding.length}.`,
+        `Expected ${EMBEDDING_DIMENSIONS}-dimensional embedding, received ${embedding.length}.`,
       );
     }
 

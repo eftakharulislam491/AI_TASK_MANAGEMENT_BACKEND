@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { EmbeddingService } from './embedding.service';
+import { EMBEDDING_DIMENSIONS, EmbeddingService } from './embedding.service';
 
 type SourceType = 'TASK' | 'PROJECT';
 
@@ -14,10 +14,12 @@ export class IndexingService {
 
   toVectorLiteral(vector: number[]) {
     if (
-      vector.length !== 1536 ||
+      vector.length !== EMBEDDING_DIMENSIONS ||
       !vector.every((value) => Number.isFinite(value))
     ) {
-      throw new Error('Embedding vector must contain 1536 finite numbers.');
+      throw new Error(
+        `Embedding vector must contain ${EMBEDDING_DIMENSIONS} finite numbers.`,
+      );
     }
 
     return `[${vector.map((value) => Number(value).toFixed(8)).join(',')}]`;
@@ -83,8 +85,6 @@ export class IndexingService {
   }
 
   async indexTasksData(organizationId: string) {
-    await this.softDeleteSourceDocuments(organizationId, 'TASK');
-
     const tasks = await this.prisma.task.findMany({
       where: {
         organizationId,
@@ -152,6 +152,12 @@ export class IndexingService {
       });
     }
 
+    await this.softDeleteMissingSourceDocuments(
+      organizationId,
+      'TASK',
+      tasks.map((task) => task.id),
+    );
+
     return {
       success: true,
       message: 'Tasks indexed successfully.',
@@ -160,8 +166,6 @@ export class IndexingService {
   }
 
   async indexProjectsData(organizationId: string) {
-    await this.softDeleteSourceDocuments(organizationId, 'PROJECT');
-
     const projects = await this.prisma.project.findMany({
       where: {
         organizationId,
@@ -227,6 +231,12 @@ export class IndexingService {
       });
     }
 
+    await this.softDeleteMissingSourceDocuments(
+      organizationId,
+      'PROJECT',
+      projects.map((project) => project.id),
+    );
+
     return {
       success: true,
       message: 'Projects indexed successfully.',
@@ -291,6 +301,103 @@ export class IndexingService {
           "updatedAt" = NOW()
         WHERE "organizationId" = ${organizationId}
           AND "sourceType" = ${sourceType}
+      `,
+    );
+  }
+
+  async syncTaskData(organizationId: string, taskId: string) {
+    const task = await this.prisma.task.findFirst({
+      where: { id: taskId, organizationId },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        status: true,
+        priority: true,
+        tags: true,
+        deadline: true,
+        estimatedHours: true,
+        createdAt: true,
+        updatedAt: true,
+        project: {
+          select: { id: true, name: true, slug: true },
+        },
+        assignee: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            displayName: true,
+          },
+        },
+        reporter: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            displayName: true,
+          },
+        },
+      },
+    });
+
+    if (!task) {
+      await this.prisma.$executeRaw(
+        Prisma.sql`
+          UPDATE "document_embeddings"
+          SET
+            "isDeleted" = true,
+            "deletedAt" = NOW(),
+            "updatedAt" = NOW()
+          WHERE "organizationId" = ${organizationId}
+            AND "chunkKey" = ${`task-${taskId}`}
+        `,
+      );
+      return;
+    }
+
+    await this.indexDocument({
+      organizationId,
+      chunkKey: `task-${task.id}`,
+      sourceType: 'TASK',
+      sourceId: task.id,
+      sourceLabel: task.title,
+      content: this.buildTaskContent(task),
+      metadata: {
+        taskId: task.id,
+        status: task.status,
+        priority: task.priority,
+        tags: task.tags,
+        projectId: task.project?.id,
+        projectName: task.project?.name,
+        assigneeId: task.assignee?.id,
+        reporterId: task.reporter.id,
+      },
+    });
+  }
+
+  private async softDeleteMissingSourceDocuments(
+    organizationId: string,
+    sourceType: SourceType,
+    sourceIds: string[],
+  ) {
+    if (sourceIds.length === 0) {
+      await this.softDeleteSourceDocuments(organizationId, sourceType);
+      return;
+    }
+
+    await this.prisma.$executeRaw(
+      Prisma.sql`
+        UPDATE "document_embeddings"
+        SET
+          "isDeleted" = true,
+          "deletedAt" = NOW(),
+          "updatedAt" = NOW()
+        WHERE "organizationId" = ${organizationId}
+          AND "sourceType" = ${sourceType}
+          AND "sourceId" NOT IN (${Prisma.join(sourceIds)})
       `,
     );
   }
