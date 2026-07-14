@@ -29,6 +29,8 @@ const ROLE_RANK: Record<Role, number> = {
   SUPER_ADMIN: 4,
 };
 
+const MANAGER_VISIBLE_ROLES: Role[] = ['MEMBER', 'TEAM_LEADER'];
+
 const userAbilitySelect = {
   id: true,
   name: true,
@@ -683,7 +685,13 @@ export class UsersService {
     // Notify Super Admins and Managers
     const superAdmins = await this.prisma.user.findMany({
       where: { role: 'SUPER_ADMIN', isActive: true },
-      select: { id: true },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        displayName: true,
+      },
     });
 
     const managers = organizationId
@@ -693,15 +701,17 @@ export class UsersService {
             status: 'ACTIVE',
             role: 'MANAGER',
           },
-          select: { userId: true },
+          include: { user: true },
         })
       : [];
+
+    const managerUsers = managers.map((m) => m.user);
 
     const recipientIds = Array.from(
       new Set([
         target.id,
         ...superAdmins.map((u) => u.id),
-        ...managers.map((m) => m.userId),
+        ...managerUsers.map((u) => u.id),
       ]),
     ).filter((id) => id !== actor.id);
 
@@ -728,17 +738,26 @@ export class UsersService {
       });
     }
 
-    if (target.id !== actor.id) {
-      await this.mailService.sendRoleChangeRequestedEmail({
-        to: target.email,
-        recipientName: targetName,
-        requesterName: actorName,
-        targetName,
-        currentRole,
-        requestedRole: input.requestedRole,
-        reason: input.reason,
-      });
-    }
+    const emailRecipients = [target, ...superAdmins, ...managerUsers].filter(
+      (recipient, index, recipients) =>
+        recipient.email !== actor.email &&
+        recipients.findIndex((item) => item.email === recipient.email) ===
+          index,
+    );
+
+    await Promise.all(
+      emailRecipients.map((recipient) =>
+        this.mailService.sendRoleChangeRequestedEmail({
+          to: recipient.email,
+          recipientName: this.getUserDisplayName(recipient),
+          requesterName: actorName,
+          targetName,
+          currentRole,
+          requestedRole: input.requestedRole,
+          reason: input.reason,
+        }),
+      ),
+    );
 
     return serializeResponse({
       success: true,
@@ -1275,7 +1294,7 @@ export class UsersService {
           ...baseWhere,
           targetUserId: actor.id,
         } satisfies Prisma.RoleChangeRequestWhereInput;
-      case 'pending':
+      case 'pending': {
         if (actor.role === 'SUPER_ADMIN') {
           return {
             ...baseWhere,
@@ -1285,28 +1304,30 @@ export class UsersService {
 
         if (!actor.currentOrganizationId) {
           throw new BadRequestException(
-            'Organization context is required to review role change requests.',
+            'Organization context is required to view pending role change requests.',
           );
         }
 
-        if (actor.role !== 'MANAGER') {
-          throw new ForbiddenException(
-            'Only managers and super admins can review pending requests.',
-          );
+        const pendingConditions: Prisma.RoleChangeRequestWhereInput[] = [
+          { targetUserId: actor.id, requesterId: { not: actor.id } },
+        ];
+
+        if (actor.role === 'MANAGER') {
+          pendingConditions.push({
+            organizationId: accessibleOrganizationId,
+            requesterId: { not: actor.id },
+            requestedRole: { in: MANAGER_VISIBLE_ROLES },
+            currentRole: { in: MANAGER_VISIBLE_ROLES },
+          });
         }
 
         return {
           ...baseWhere,
-          organizationId: accessibleOrganizationId,
           status: query.status ?? 'PENDING',
-          requestedRole: {
-            in: ['TEAM_LEADER', 'MEMBER'],
-          },
-          currentRole: {
-            in: ['TEAM_LEADER', 'MEMBER'],
-          },
+          OR: pendingConditions,
         } satisfies Prisma.RoleChangeRequestWhereInput;
-      case 'all':
+      }
+      case 'all': {
         if (actor.role === 'SUPER_ADMIN') {
           return baseWhere;
         }
@@ -1318,14 +1339,24 @@ export class UsersService {
           } satisfies Prisma.RoleChangeRequestWhereInput;
         }
 
+        const allConditions: Prisma.RoleChangeRequestWhereInput[] = [
+          { requesterId: actor.id },
+          { targetUserId: actor.id },
+        ];
+
+        if (actor.role === 'MANAGER') {
+          allConditions.push({
+            organizationId: accessibleOrganizationId,
+            requestedRole: { in: MANAGER_VISIBLE_ROLES },
+            currentRole: { in: MANAGER_VISIBLE_ROLES },
+          });
+        }
+
         return {
           ...baseWhere,
-          OR: [
-            { requesterId: actor.id },
-            { targetUserId: actor.id },
-            { organizationId: accessibleOrganizationId },
-          ],
+          OR: allConditions,
         } satisfies Prisma.RoleChangeRequestWhereInput;
+      }
       default:
         return {
           ...baseWhere,
@@ -1356,9 +1387,13 @@ export class UsersService {
       return;
     }
 
+    if (actor.id === request.targetUserId) {
+      return;
+    }
+
     if (actor.role !== 'MANAGER') {
       throw new ForbiddenException(
-        'Only managers and super admins can review role change requests.',
+        'Only managers, super admins, or the target user can review role change requests.',
       );
     }
 
@@ -1372,17 +1407,11 @@ export class UsersService {
     }
 
     if (
-      ROLE_RANK[request.currentRole] >= ROLE_RANK.MANAGER ||
-      ROLE_RANK[request.requestedRole] >= ROLE_RANK.MANAGER
+      !MANAGER_VISIBLE_ROLES.includes(request.currentRole) ||
+      !MANAGER_VISIBLE_ROLES.includes(request.requestedRole)
     ) {
       throw new ForbiddenException(
         'Manager approval is limited to member and team leader role changes.',
-      );
-    }
-
-    if (request.targetUserId === actor.id) {
-      throw new ForbiddenException(
-        'You cannot approve a role change request for yourself.',
       );
     }
   }
@@ -1578,6 +1607,9 @@ export class UsersService {
       reason: request.reason,
       reviewNote: request.reviewNote,
       metadata: request.metadata,
+      requesterId: request.requester.id,
+      targetUserId: request.targetUser.id,
+      reviewerId: request.reviewer?.id ?? null,
       requester: request.requester,
       targetUser: request.targetUser,
       reviewer: request.reviewer,

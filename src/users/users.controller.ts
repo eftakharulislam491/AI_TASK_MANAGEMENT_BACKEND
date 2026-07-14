@@ -139,8 +139,6 @@ export class UsersController {
   }
 
   @Patch('role-change-requests/:requestId/review')
-  @UseGuards(RolesGuard)
-  @Roles('SUPER_ADMIN', 'MANAGER')
   reviewRoleChangeRequest(
     @CurrentUser() currentUser: JwtUser,
     @Param('requestId') requestId: string,
