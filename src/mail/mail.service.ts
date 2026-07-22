@@ -188,9 +188,13 @@ export class MailService {
     data: Record<string, unknown>,
   ) {
     const filePath = this.resolveTemplatePath(templateName);
+    const templateData = {
+      appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
+      ...data,
+    };
 
     return new Promise<string>((resolve, reject) => {
-      renderFile(filePath, data, (error, html) => {
+      renderFile(filePath, templateData, (error, html) => {
         if (error) {
           reject(error);
           return;

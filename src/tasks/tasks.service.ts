@@ -820,13 +820,21 @@ export class TasksService {
       },
     });
 
-    await this.mailService.sendTaskAssignedEmail({
-      to: task.assignee.email,
-      taskTitle: task.title,
-      taskUrl,
-      assigneeName: task.assignee.displayName ?? task.assignee.firstName,
-      deadline: task.deadline,
-    });
+    try {
+      await this.mailService.sendTaskAssignedEmail({
+        to: task.assignee.email,
+        taskTitle: task.title,
+        taskUrl,
+        assigneeName: task.assignee.displayName ?? task.assignee.firstName,
+        deadline: task.deadline,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Could not send task assignment email for task ${task.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   private async syncTaskIndex(organizationId: string, taskId: string) {
