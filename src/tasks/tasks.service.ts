@@ -172,6 +172,14 @@ export class TasksService {
         input.projectId,
         input,
       ));
+    const autoAssigned = !input.assigneeId && Boolean(assigneeId);
+    const assignmentMetadata = autoAssigned
+      ? {
+          aiAssigned: true,
+          assignedAt: new Date().toISOString(),
+          method: 'auto-assign',
+        }
+      : undefined;
 
     if (input.projectId) {
       await this.assertProjectBelongsToOrganization(
@@ -197,6 +205,7 @@ export class TasksService {
           deadline: input.deadline,
           estimatedHours: input.estimatedHours,
           tags: input.tags,
+          aiMetadata: assignmentMetadata,
         },
         select: {
           id: true,
@@ -805,6 +814,7 @@ export class TasksService {
       metadata: {
         taskId: task.id,
         projectId: task.projectId,
+        aiMetadata: task.aiMetadata,
       },
     });
 
@@ -849,10 +859,69 @@ export class TasksService {
         ? candidates
         : await this.getAutoAssignCandidates(organizationId);
 
-    return (
-      this.rankAssignmentCandidates(input.tags ?? [], pool)[0]?.candidate.id ??
-      null
-    );
+    const ranked = this.rankAssignmentCandidates(input.tags ?? [], pool);
+
+    return this.rerankAutoAssignCandidates(input, ranked);
+  }
+
+  private async rerankAutoAssignCandidates(
+    input: CreateTaskInput,
+    ranked: RankedCandidate[],
+  ) {
+    const topCandidates = ranked.slice(0, 5);
+
+    if (topCandidates.length === 0) {
+      return null;
+    }
+
+    try {
+      const aiResult = await this.ragService.generateStructuredResponse(
+        [
+          'Choose the single best assignee for this new task.',
+          'Return JSON with userId, score (0-100), and reason.',
+          'Use only candidate IDs supplied in the context.',
+          'Consider task meaning, skill relevance, workload, and experience.',
+        ].join(' '),
+        [
+          JSON.stringify({
+            task: {
+              title: input.title,
+              description: input.description,
+              requiredSkills: input.tags,
+              priority: input.priority,
+              estimatedHours: input.estimatedHours,
+              deadline: input.deadline?.toISOString(),
+            },
+            candidates: topCandidates.map((item) => ({
+              userId: item.candidate.id,
+              skills: item.candidate.abilities.flatMap((ability) => [
+                ability.name,
+                ...ability.keywords,
+              ]),
+              workload: item.workload,
+              yearsOfExperience: item.candidate.profile?.yearsOfExperience ?? 0,
+              baselineScore: item.score,
+            })),
+          }),
+        ],
+      );
+      const userId = this.extractAiAssigneeId(aiResult);
+
+      if (
+        userId &&
+        topCandidates.some((item) => item.candidate.id === userId)
+      ) {
+        return userId;
+      }
+    } catch (error) {
+      this.logger.warn(
+        `AI auto-assignment ranking failed; using the backend scoring fallback. ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    return topCandidates[0]?.candidate.id ?? null;
   }
 
   private getAutoAssignCandidates(organizationId: string, projectId?: string) {
@@ -1020,6 +1089,17 @@ export class TasksService {
       .filter((item) => item !== null)
       .sort((left, right) => right.score - left.score)
       .slice(0, 5);
+  }
+
+  private extractAiAssigneeId(result: unknown) {
+    if (!result || typeof result !== 'object') {
+      return null;
+    }
+
+    const value = result as Record<string, unknown>;
+    const userId = value.userId ?? value.assigneeId ?? value.id;
+
+    return typeof userId === 'string' && userId.trim() ? userId : null;
   }
 
   private mapRankedCandidate(

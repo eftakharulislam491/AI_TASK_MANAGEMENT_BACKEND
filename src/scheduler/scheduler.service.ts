@@ -6,6 +6,7 @@ import type { AppEnv } from '../config/env';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RAGService } from '../rag/rag.service';
 
 const activeTaskStatuses: TaskStatus[] = ['TODO', 'IN_PROGRESS', 'IN_REVIEW'];
 const reminderWindows = [24, 48] as const;
@@ -50,6 +51,7 @@ export class SchedulerService {
     private readonly notificationsService: NotificationsService,
     private readonly mailService: MailService,
     private readonly configService: ConfigService<AppEnv, true>,
+    private readonly ragService: RAGService,
   ) {}
 
   @Cron(CronExpression.EVERY_HOUR)
@@ -142,6 +144,44 @@ export class SchedulerService {
       this.logger.log(`Daily digest job completed. Sent ${sentCount} emails.`);
     } catch (error) {
       this.logCronError('Daily digest job failed.', error);
+    }
+  }
+
+  @Cron('0 2 * * *')
+  async autoIndexRagData() {
+    this.logger.log('Nightly RAG auto-index job started.');
+
+    try {
+      const organizations = await this.prisma.organization.findMany({
+        where: {
+          isActive: true,
+        },
+        select: {
+          id: true,
+        },
+      });
+      let indexedCount = 0;
+
+      for (const organization of organizations) {
+        try {
+          await Promise.all([
+            this.ragService.ingestTasksData(organization.id),
+            this.ragService.ingestProjectsData(organization.id),
+          ]);
+          indexedCount += 1;
+        } catch (error) {
+          this.logCronError(
+            `Nightly RAG auto-index failed for organization ${organization.id}.`,
+            error,
+          );
+        }
+      }
+
+      this.logger.log(
+        `Nightly RAG auto-index job completed. Indexed ${indexedCount} organizations.`,
+      );
+    } catch (error) {
+      this.logCronError('Nightly RAG auto-index job failed.', error);
     }
   }
 
