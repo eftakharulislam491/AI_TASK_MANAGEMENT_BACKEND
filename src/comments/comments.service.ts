@@ -271,7 +271,11 @@ export class CommentsService {
       select: {
         id: true,
         authorId: true,
-        task: { select: { assigneeId: true } },
+        task: {
+          select: {
+            assigneeId: true,
+          },
+        },
       },
     });
 
@@ -293,9 +297,13 @@ export class CommentsService {
     organizationId: string,
     assigneeId: string | null,
   ) {
-    const role = this.getRoleForOrganization(currentUser, organizationId);
-    if (role !== 'MEMBER' || assigneeId === currentUser.sub) return;
-
-    throw new ForbiddenException('You can only access tasks assigned to you.');
+    if (
+      this.getRoleForOrganization(currentUser, organizationId) === 'MEMBER' &&
+      assigneeId !== currentUser.sub
+    ) {
+      throw new ForbiddenException(
+        'You can only access tasks assigned to you.',
+      );
+    }
   }
 }

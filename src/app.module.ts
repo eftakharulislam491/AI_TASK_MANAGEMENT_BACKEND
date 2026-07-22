@@ -2,22 +2,22 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ActivityModule } from './activity/activity.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { ActivityModule } from './activity/activity.module';
 import { AttachmentsModule } from './attachments/attachments.module';
 import { AuthModule } from './auth/auth.module';
-import { CommentsModule } from './comments/comments.module';
-import { validateEnv } from './config/env';
-import { PrismaModule } from './prisma/prisma.module';
-import { LoggerMiddleware } from './common/middleware/logger.middleware';
-import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
 import { RolesGuard } from './common/guards/roles.guard';
 import { TenantAccessGuard } from './common/guards/tenant-access.guard';
+import { LoggerMiddleware } from './common/middleware/logger.middleware';
+import { TenantContextMiddleware } from './common/middleware/tenant-context.middleware';
+import { CommentsModule } from './comments/comments.module';
+import { validateEnv } from './config/env';
 import { HealthModule } from './health/health.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { MailModule } from './mail/mail.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { PrismaModule } from './prisma/prisma.module';
 import { ProjectsModule } from './projects/projects.module';
 import { RAGModule } from './rag/rag.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
@@ -29,35 +29,22 @@ import { UsersModule } from './users/users.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      cache: true,
       validate: validateEnv,
     }),
     ThrottlerModule.forRoot([
-      {
-        name: 'short',
-        ttl: 1000,
-        limit: 10,
-      },
-      {
-        name: 'medium',
-        ttl: 60000,
-        limit: 100,
-      },
-      {
-        name: 'long',
-        ttl: 3600000,
-        limit: 1000,
-      },
+      { ttl: 1000, limit: 10 },
+      { ttl: 60000, limit: 100 },
+      { ttl: 3600000, limit: 1000 },
     ]),
-    PrismaModule,
-    AuthModule,
     ActivityModule,
     AttachmentsModule,
+    AuthModule,
     CommentsModule,
     HealthModule,
     InvitationsModule,
     MailModule,
     NotificationsModule,
+    PrismaModule,
     ProjectsModule,
     RAGModule,
     SchedulerModule,

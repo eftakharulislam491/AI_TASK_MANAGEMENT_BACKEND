@@ -11,28 +11,19 @@ import type {
   Role,
   TaskStatus,
 } from '@prisma/client';
-import { ActivityService } from '../activity/activity.service';
 import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 import { serializeResponse } from '../common/utils/response';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type {
   AddProjectMemberInput,
-  CreateProjectLeaveRequestInput,
   CreateProjectInput,
+  CreateProjectLeaveRequestInput,
   ListProjectLeaveRequestsQueryInput,
   ListProjectsQueryInput,
   ReviewProjectLeaveRequestInput,
   UpdateProjectInput,
 } from './projects.schemas';
-
-const taskStatuses: TaskStatus[] = [
-  'TODO',
-  'IN_PROGRESS',
-  'IN_REVIEW',
-  'DONE',
-  'CANCELLED',
-];
 
 const userSummarySelect = {
   id: true,
@@ -96,13 +87,6 @@ const projectDetailSelect = {
   },
 } satisfies Prisma.ProjectSelect;
 
-type ProjectListRow = Prisma.ProjectGetPayload<{
-  select: typeof projectListSelect;
-}>;
-type ProjectDetailRow = Prisma.ProjectGetPayload<{
-  select: typeof projectDetailSelect;
-}>;
-
 const projectLeaveRequestSelect = {
   id: true,
   projectId: true,
@@ -132,9 +116,16 @@ const projectLeaveRequestSelect = {
   },
 } satisfies Prisma.ProjectLeaveRequestSelect;
 
+type ProjectListRow = Prisma.ProjectGetPayload<{
+  select: typeof projectListSelect;
+}>;
+type ProjectDetailRow = Prisma.ProjectGetPayload<{
+  select: typeof projectDetailSelect;
+}>;
 type ProjectLeaveRequestRow = Prisma.ProjectLeaveRequestGetPayload<{
   select: typeof projectLeaveRequestSelect;
 }>;
+type TaskSummary = Record<TaskStatus, number>;
 
 @Injectable()
 export class ProjectsService {
@@ -147,12 +138,11 @@ export class ProjectsService {
     const organizationId = this.getOrganizationId(currentUser);
     this.assertManager(currentUser, organizationId);
     await this.assertSlugAvailable(organizationId, input.slug);
+    this.assertValidDateRange(input.startDate, input.endDate);
 
     if (input.teamId) {
       await this.assertTeamBelongsToOrganization(organizationId, input.teamId);
     }
-
-    this.assertValidDateRange(input.startDate, input.endDate);
 
     const project = await this.prisma.$transaction(async (tx) => {
       const created = await tx.project.create({
@@ -196,22 +186,23 @@ export class ProjectsService {
     const skip = (page - 1) * limit;
     const where = {
       organizationId,
-      ...(role === 'MEMBER'
-        ? { tasks: { some: { assigneeId: currentUser.sub } } }
-        : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.teamId ? { teamId: query.teamId } : {}),
+      ...(query.ownerId ? { ownerId: query.ownerId } : {}),
+      ...(role === 'MEMBER'
+        ? {
+            members: {
+              some: {
+                userId: currentUser.sub,
+              },
+            },
+          }
+        : {}),
       ...(query.search
         ? {
             OR: [
               {
                 name: {
-                  contains: query.search,
-                  mode: 'insensitive' as const,
-                },
-              },
-              {
-                slug: {
                   contains: query.search,
                   mode: 'insensitive' as const,
                 },
@@ -230,21 +221,21 @@ export class ProjectsService {
     const [projects, total] = await Promise.all([
       this.prisma.project.findMany({
         where,
-        orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+        orderBy: [{ updatedAt: 'desc' }],
         skip,
         take: limit,
         select: projectListSelect,
       }),
       this.prisma.project.count({ where }),
     ]);
-    const taskSummaries = await this.getTaskSummaries(
+    const summaries = await this.getTaskSummaries(
       projects.map((project) => project.id),
       role === 'MEMBER' ? currentUser.sub : undefined,
     );
 
     return serializeResponse({
       data: projects.map((project) =>
-        this.mapProjectListItem(project, taskSummaries.get(project.id)),
+        this.mapProjectListItem(project, summaries.get(project.id)),
       ),
       meta: {
         page,
@@ -257,25 +248,16 @@ export class ProjectsService {
 
   async getProject(currentUser: JwtUser, projectId: string) {
     const organizationId = this.getOrganizationId(currentUser);
-    const role = this.getRoleForOrganization(currentUser, organizationId);
     const project = await this.getProjectOrThrow(
       organizationId,
       projectId,
       projectDetailSelect,
     );
-    await this.assertCanViewProject(
-      currentUser,
-      organizationId,
-      project.id,
-      role,
-    );
-    const taskSummaries = await this.getTaskSummaries(
-      [project.id],
-      role === 'MEMBER' ? currentUser.sub : undefined,
-    );
+    this.assertCanViewProject(currentUser, organizationId, project);
+    const summaries = await this.getTaskSummaries([project.id]);
 
     return serializeResponse(
-      this.mapProjectDetail(project, taskSummaries.get(project.id)),
+      this.mapProjectDetail(project, summaries.get(project.id)),
     );
   }
 
@@ -285,16 +267,14 @@ export class ProjectsService {
     input: UpdateProjectInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
+    this.assertManager(currentUser, organizationId);
     const existing = await this.getProjectOrThrow(organizationId, projectId, {
       id: true,
       slug: true,
-      ownerId: true,
     } satisfies Prisma.ProjectSelect);
 
-    this.assertCanEditProject(currentUser, organizationId, existing.ownerId);
-
     if (input.slug && input.slug !== existing.slug) {
-      await this.assertSlugAvailable(organizationId, input.slug, projectId);
+      await this.assertSlugAvailable(organizationId, input.slug);
     }
 
     if (input.teamId) {
@@ -303,41 +283,43 @@ export class ProjectsService {
 
     this.assertValidDateRange(input.startDate, input.endDate);
 
-    const updated = await this.prisma.project.update({
-      where: { id: projectId },
+    const project = await this.prisma.project.update({
+      where: {
+        id: projectId,
+      },
       data: {
+        teamId: input.teamId,
         name: input.name,
         slug: input.slug,
         description: input.description,
-        teamId: input.teamId,
         status: input.status,
         startDate: input.startDate,
         endDate: input.endDate,
       },
       select: projectListSelect,
     });
-    const taskSummaries = await this.getTaskSummaries([updated.id]);
 
     return serializeResponse({
       message: 'Project updated successfully.',
-      project: this.mapProjectListItem(updated, taskSummaries.get(updated.id)),
+      project: this.mapProjectListItem(project),
     });
   }
 
   async deleteProject(currentUser: JwtUser, projectId: string) {
     const organizationId = this.getOrganizationId(currentUser);
-    await this.getProjectOrThrow(organizationId, projectId, { id: true });
     this.assertManager(currentUser, organizationId);
+    await this.getProjectOrThrow(organizationId, projectId, {
+      id: true,
+    } satisfies Prisma.ProjectSelect);
 
-    await this.prisma.project.update({
-      where: { id: projectId },
-      data: {
-        status: 'ARCHIVED',
+    await this.prisma.project.delete({
+      where: {
+        id: projectId,
       },
     });
 
     return serializeResponse({
-      message: 'Project archived successfully.',
+      message: 'Project deleted successfully.',
     });
   }
 
@@ -347,44 +329,43 @@ export class ProjectsService {
     input: AddProjectMemberInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
+    this.assertManager(currentUser, organizationId);
     await this.getProjectOrThrow(organizationId, projectId, {
       id: true,
     } satisfies Prisma.ProjectSelect);
+    await this.assertActiveOrganizationMember(organizationId, input.userId);
 
-    this.assertCanManageProject(currentUser, organizationId);
-    await this.assertActiveOrganizationMember(
-      organizationId,
-      input.userId,
-      'User must be an active member of this organization.',
-    );
-
-    const existing = await this.prisma.projectMember.findUnique({
+    await this.prisma.projectMember.upsert({
       where: {
         projectId_userId: {
           projectId,
           userId: input.userId,
         },
       },
-      select: {
-        id: true,
-      },
-    });
-
-    if (existing) {
-      throw new ConflictException('User is already a member of this project.');
-    }
-
-    await this.prisma.projectMember.create({
-      data: {
+      create: {
         projectId,
         userId: input.userId,
       },
+      update: {},
     });
 
-    return this.getProjectMembers(
-      projectId,
-      'Project member added successfully.',
-    );
+    const members = await this.listProjectMembers(projectId);
+
+    await this.notificationsService.createNotification({
+      userId: input.userId,
+      organizationId,
+      type: 'PROJECT_MEMBER_ADDED',
+      title: 'Added to project',
+      body: 'You have been added to a project.',
+      metadata: {
+        projectId,
+      },
+    });
+
+    return serializeResponse({
+      message: 'Project member added successfully.',
+      members,
+    });
   }
 
   async removeProjectMember(
@@ -393,41 +374,23 @@ export class ProjectsService {
     userId: string,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
-    const project = await this.getProjectOrThrow(organizationId, projectId, {
+    this.assertManager(currentUser, organizationId);
+    await this.getProjectOrThrow(organizationId, projectId, {
       id: true,
       ownerId: true,
     } satisfies Prisma.ProjectSelect);
 
-    this.assertCanManageProject(currentUser, organizationId);
-
-    if (project.ownerId === userId) {
-      throw new BadRequestException('Project owner cannot be removed.');
-    }
-
-    const member = await this.prisma.projectMember.findUnique({
+    await this.prisma.projectMember.deleteMany({
       where: {
-        projectId_userId: {
-          projectId,
-          userId,
-        },
-      },
-      select: {
-        id: true,
+        projectId,
+        userId,
       },
     });
-
-    if (!member) {
-      throw new NotFoundException('Project member not found.');
-    }
-
-    await this.prisma.projectMember.delete({
-      where: {
-        id: member.id,
-      },
-    });
+    const members = await this.listProjectMembers(projectId);
 
     return serializeResponse({
       message: 'Project member removed successfully.',
+      members,
     });
   }
 
@@ -441,102 +404,33 @@ export class ProjectsService {
       id: true,
       name: true,
       ownerId: true,
+      teamId: true,
     } satisfies Prisma.ProjectSelect);
+    await this.assertProjectMember(projectId, currentUser.sub);
 
-    if (project.ownerId === currentUser.sub) {
-      throw new BadRequestException('Project owner cannot request to leave.');
-    }
-
-    await this.assertActiveOrganizationMember(
-      organizationId,
-      currentUser.sub,
-      'You must be an active organization member to request leaving a project.',
-    );
-
-    const [projectMember, assignedTask] = await Promise.all([
-      this.prisma.projectMember.findUnique({
-        where: {
-          projectId_userId: {
-            projectId,
-            userId: currentUser.sub,
-          },
-        },
-        select: { id: true },
-      }),
-      this.prisma.task.findFirst({
-        where: {
-          projectId,
-          organizationId,
-          assigneeId: currentUser.sub,
-        },
-        select: { id: true },
-      }),
-    ]);
-
-    if (!projectMember && !assignedTask) {
-      throw new ForbiddenException(
-        'You must be a project member or have an assigned task in this project.',
-      );
-    }
-
-    const existing = await this.prisma.projectLeaveRequest.findFirst({
-      where: {
+    const request = await this.prisma.projectLeaveRequest.create({
+      data: {
         projectId,
-        requesterId: currentUser.sub,
-        status: 'PENDING',
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (existing) {
-      throw new ConflictException(
-        'You already have a pending leave request for this project.',
-      );
-    }
-
-    const request = await this.prisma.$transaction(async (tx) => {
-      const created = await tx.projectLeaveRequest.create({
-        data: {
-          projectId,
-          organizationId,
-          requesterId: currentUser.sub,
-          reason: input.reason,
-        },
-        select: projectLeaveRequestSelect,
-      });
-
-      await ActivityService.logActivity(tx, {
         organizationId,
-        actorId: currentUser.sub,
-        projectId,
-        action: 'PROJECT_LEAVE_REQUEST_CREATED',
-        metadata: {
-          requestId: created.id,
-          requesterId: currentUser.sub,
-          projectName: project.name,
-        },
-      });
-
-      return created;
+        requesterId: currentUser.sub,
+        reason: input.reason,
+      },
+      select: projectLeaveRequestSelect,
     });
-
-    const recipients = await this.getProjectReviewRecipientIds(
+    const reviewers = await this.getProjectReviewers(
       organizationId,
-      projectId,
-      currentUser.sub,
+      project.ownerId,
+      project.teamId,
     );
 
-    await this.notificationsService.createBulkNotifications(recipients, {
+    await this.notificationsService.createBulkNotifications(reviewers, {
       organizationId,
       type: 'PROJECT_LEAVE_REQUESTED',
-      title: 'Project leave request',
-      body: `${this.getDisplayName(request.requester)} wants to leave ${project.name}.`,
+      title: 'Project leave requested',
+      body: `${currentUser.email} requested to leave ${project.name}.`,
       metadata: {
-        requestId: request.id,
         projectId,
-        requesterId: currentUser.sub,
+        requestId: request.id,
       },
     });
 
@@ -551,16 +445,20 @@ export class ProjectsService {
     query: ListProjectLeaveRequestsQueryInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
+    const role = this.getRoleForOrganization(currentUser, organizationId);
     const page = query.page;
     const limit = query.limit;
     const skip = (page - 1) * limit;
-    const role = this.getRoleForOrganization(currentUser, organizationId);
-    const where = this.buildProjectLeaveRequestWhere(
+    const status =
+      query.status ?? (query.scope === 'pending' ? 'PENDING' : undefined);
+    const where = {
       organizationId,
-      currentUser.sub,
-      role,
-      query,
-    );
+      ...(status ? { status } : {}),
+      ...(query.projectId ? { projectId: query.projectId } : {}),
+      ...(query.scope === 'mine' || role === 'MEMBER'
+        ? { requesterId: currentUser.sub }
+        : {}),
+    } satisfies Prisma.ProjectLeaveRequestWhereInput;
 
     const [requests, total] = await Promise.all([
       this.prisma.projectLeaveRequest.findMany({
@@ -592,7 +490,8 @@ export class ProjectsService {
     input: ReviewProjectLeaveRequestInput,
   ) {
     const organizationId = this.getOrganizationId(currentUser);
-    const request = await this.prisma.projectLeaveRequest.findFirst({
+    this.assertManager(currentUser, organizationId);
+    const existing = await this.prisma.projectLeaveRequest.findFirst({
       where: {
         id: requestId,
         organizationId,
@@ -600,271 +499,56 @@ export class ProjectsService {
       select: projectLeaveRequestSelect,
     });
 
-    if (!request) {
+    if (!existing) {
       throw new NotFoundException('Leave request not found.');
     }
 
-    await this.assertCanReviewLeaveRequest(
-      currentUser,
-      organizationId,
-      request.project.ownerId,
-      request.project.teamId,
-    );
-
-    if (request.status !== 'PENDING') {
-      throw new BadRequestException(
-        'Only pending leave requests can be reviewed.',
-      );
+    if (existing.status !== 'PENDING') {
+      throw new BadRequestException('Leave request has already been reviewed.');
     }
 
-    const reviewed = await this.prisma.$transaction(async (tx) => {
-      if (input.decision === 'APPROVED') {
-        await Promise.all([
-          tx.projectMember.deleteMany({
-            where: {
-              projectId: request.projectId,
-              userId: request.requesterId,
-            },
-          }),
-          tx.task.updateMany({
-            where: {
-              projectId: request.projectId,
-              assigneeId: request.requesterId,
-            },
-            data: { assigneeId: null },
-          }),
-        ]);
+    const nextStatus = input.decision as ProjectLeaveRequestStatus;
+    const request = await this.prisma.$transaction(async (tx) => {
+      if (nextStatus === 'APPROVED') {
+        await tx.projectMember.deleteMany({
+          where: {
+            projectId: existing.projectId,
+            userId: existing.requesterId,
+          },
+        });
       }
 
-      const updated = await tx.projectLeaveRequest.update({
+      return tx.projectLeaveRequest.update({
         where: {
-          id: request.id,
+          id: requestId,
         },
         data: {
-          status: input.decision,
+          status: nextStatus,
           reviewNote: input.reviewNote,
           reviewedById: currentUser.sub,
           reviewedAt: new Date(),
         },
         select: projectLeaveRequestSelect,
       });
-
-      await ActivityService.logActivity(tx, {
-        organizationId,
-        actorId: currentUser.sub,
-        projectId: request.projectId,
-        action: 'PROJECT_LEAVE_REQUEST_REVIEWED',
-        metadata: {
-          requestId: request.id,
-          decision: input.decision,
-          requesterId: request.requesterId,
-        },
-      });
-
-      return updated;
     });
 
     await this.notificationsService.createNotification({
-      userId: reviewed.requesterId,
+      userId: request.requesterId,
       organizationId,
       type: 'PROJECT_LEAVE_REVIEWED',
-      title: 'Leave request reviewed',
-      body: `Your request to leave ${reviewed.project.name} was ${input.decision.toLowerCase()}.`,
+      title: 'Project leave request reviewed',
+      body: `Your request to leave ${request.project.name} was ${request.status.toLowerCase()}.`,
       metadata: {
-        requestId: reviewed.id,
-        projectId: reviewed.projectId,
-        decision: input.decision,
+        projectId: request.projectId,
+        requestId: request.id,
+        status: request.status,
       },
     });
 
     return serializeResponse({
       message: 'Leave request reviewed successfully.',
-      request: this.mapProjectLeaveRequest(reviewed),
+      request: this.mapProjectLeaveRequest(request),
     });
-  }
-
-  private async getProjectMembers(projectId: string, message: string) {
-    const members = await this.prisma.projectMember.findMany({
-      where: {
-        projectId,
-      },
-      orderBy: {
-        joinedAt: 'asc',
-      },
-      select: {
-        id: true,
-        userId: true,
-        joinedAt: true,
-        createdAt: true,
-        updatedAt: true,
-        user: {
-          select: userSummarySelect,
-        },
-      },
-    });
-
-    return serializeResponse({
-      message,
-      members,
-    });
-  }
-
-  private buildProjectLeaveRequestWhere(
-    organizationId: string,
-    currentUserId: string,
-    role: Role | undefined,
-    query: ListProjectLeaveRequestsQueryInput,
-  ) {
-    const where = {
-      organizationId,
-      ...(query.projectId ? { projectId: query.projectId } : {}),
-      ...(query.status ? { status: query.status } : {}),
-    } satisfies Prisma.ProjectLeaveRequestWhereInput;
-
-    if (query.scope === 'mine') {
-      return {
-        ...where,
-        requesterId: currentUserId,
-      } satisfies Prisma.ProjectLeaveRequestWhereInput;
-    }
-
-    if (query.scope === 'pending') {
-      if (role === 'TEAM_LEADER') {
-        return {
-          ...where,
-          status: query.status ?? 'PENDING',
-          project: {
-            OR: [
-              { ownerId: currentUserId },
-              { team: { leaderId: currentUserId } },
-            ],
-          },
-          ...(query.requesterId ? { requesterId: query.requesterId } : {}),
-        } satisfies Prisma.ProjectLeaveRequestWhereInput;
-      }
-
-      if (role !== 'SUPER_ADMIN' && role !== 'MANAGER') {
-        return {
-          ...where,
-          status: query.status ?? 'PENDING',
-          project: {
-            ownerId: currentUserId,
-          },
-          ...(query.requesterId ? { requesterId: query.requesterId } : {}),
-        } satisfies Prisma.ProjectLeaveRequestWhereInput;
-      }
-      return {
-        ...where,
-        status: query.status ?? 'PENDING',
-        ...(query.requesterId ? { requesterId: query.requesterId } : {}),
-      } satisfies Prisma.ProjectLeaveRequestWhereInput;
-    }
-
-    if (role !== 'SUPER_ADMIN' && role !== 'MANAGER') {
-      return {
-        ...where,
-        OR: [
-          { requesterId: currentUserId },
-          { project: { ownerId: currentUserId } },
-        ],
-        ...(query.requesterId ? { requesterId: query.requesterId } : {}),
-      } satisfies Prisma.ProjectLeaveRequestWhereInput;
-    }
-
-    return {
-      ...where,
-      ...(query.requesterId ? { requesterId: query.requesterId } : {}),
-    } satisfies Prisma.ProjectLeaveRequestWhereInput;
-  }
-
-  private async getProjectReviewRecipientIds(
-    organizationId: string,
-    projectId: string,
-    requesterId: string,
-  ) {
-    const [project, managerMemberships, superAdmins] = await Promise.all([
-      this.prisma.project.findFirst({
-        where: {
-          id: projectId,
-          organizationId,
-        },
-        select: {
-          ownerId: true,
-          team: { select: { leaderId: true } },
-        },
-      }),
-      this.prisma.organizationMembership.findMany({
-        where: {
-          organizationId,
-          status: 'ACTIVE',
-          role: 'MANAGER',
-        },
-        select: {
-          userId: true,
-        },
-      }),
-      this.prisma.user.findMany({
-        where: { role: 'SUPER_ADMIN', isActive: true },
-        select: { id: true },
-      }),
-    ]);
-
-    return [
-      ...new Set([
-        project?.ownerId,
-        project?.team?.leaderId,
-        ...managerMemberships.map((membership) => membership.userId),
-        ...superAdmins.map((user) => user.id),
-      ]),
-    ].filter(
-      (userId): userId is string => Boolean(userId) && userId !== requesterId,
-    );
-  }
-
-  private mapProjectLeaveRequest(request: ProjectLeaveRequestRow) {
-    return {
-      id: request.id,
-      projectId: request.projectId,
-      organizationId: request.organizationId,
-      requesterId: request.requesterId,
-      memberId: request.requesterId,
-      reason: request.reason,
-      status: this.mapProjectLeaveStatus(request.status),
-      rawStatus: request.status,
-      reviewNote: request.reviewNote,
-      reviewedById: request.reviewedById,
-      reviewedAt: request.reviewedAt,
-      createdAt: request.createdAt,
-      updatedAt: request.updatedAt,
-      project: request.project,
-      requester: request.requester,
-      member: request.requester,
-      reviewedBy: request.reviewedBy,
-    };
-  }
-
-  private mapProjectLeaveStatus(status: ProjectLeaveRequestStatus) {
-    const map = {
-      PENDING: 'pending',
-      APPROVED: 'approved',
-      REJECTED: 'rejected',
-      CANCELED: 'canceled',
-    } satisfies Record<ProjectLeaveRequestStatus, string>;
-
-    return map[status];
-  }
-
-  private getDisplayName(user: {
-    firstName: string;
-    lastName: string;
-    displayName: string | null;
-    email: string;
-  }) {
-    return (
-      user.displayName ||
-      `${user.firstName} ${user.lastName}`.trim() ||
-      user.email
-    );
   }
 
   private getOrganizationId(currentUser: JwtUser) {
@@ -879,9 +563,7 @@ export class ProjectsService {
     currentUser: JwtUser,
     organizationId: string,
   ): Role | undefined {
-    if (currentUser.role === 'SUPER_ADMIN') {
-      return 'SUPER_ADMIN';
-    }
+    if (currentUser.role === 'SUPER_ADMIN') return 'SUPER_ADMIN';
 
     return currentUser.memberships.find(
       (membership) =>
@@ -893,102 +575,39 @@ export class ProjectsService {
   private assertManager(currentUser: JwtUser, organizationId: string) {
     const role = this.getRoleForOrganization(currentUser, organizationId);
 
-    if (role !== 'SUPER_ADMIN' && role !== 'MANAGER') {
-      throw new ForbiddenException('Only managers can perform this action.');
-    }
-  }
-
-  private assertCanManageProject(currentUser: JwtUser, organizationId: string) {
-    const role = this.getRoleForOrganization(currentUser, organizationId);
-
-    if (role === 'SUPER_ADMIN' || role === 'MANAGER') {
-      return;
-    }
-
-    throw new ForbiddenException('You are not allowed to manage this project.');
-  }
-
-  private async assertCanReviewLeaveRequest(
-    currentUser: JwtUser,
-    organizationId: string,
-    ownerId: string,
-    teamId: string | null,
-  ) {
-    const role = this.getRoleForOrganization(currentUser, organizationId);
-    if (role === 'SUPER_ADMIN' || role === 'MANAGER') return;
-
-    if (role === 'TEAM_LEADER') {
-      if (ownerId === currentUser.sub) return;
-
-      if (teamId) {
-        const ledTeam = await this.prisma.team.findFirst({
-          where: {
-            id: teamId,
-            organizationId,
-            leaderId: currentUser.sub,
-            isActive: true,
-          },
-          select: { id: true },
-        });
-        if (ledTeam) return;
-      }
-    }
-
-    throw new ForbiddenException(
-      'You are not allowed to review this project leave request.',
-    );
-  }
-
-  private async assertCanViewProject(
-    currentUser: JwtUser,
-    organizationId: string,
-    projectId: string,
-    role = this.getRoleForOrganization(currentUser, organizationId),
-  ) {
-    if (role !== 'MEMBER') {
-      return;
-    }
-
-    const assignedTask = await this.prisma.task.findFirst({
-      where: {
-        organizationId,
-        projectId,
-        assigneeId: currentUser.sub,
-      },
-      select: { id: true },
-    });
-
-    if (!assignedTask) {
-      throw new ForbiddenException(
-        'You can only view projects containing tasks assigned to you.',
-      );
-    }
-  }
-
-  private assertCanEditProject(
-    currentUser: JwtUser,
-    organizationId: string,
-    ownerId: string,
-  ) {
-    const role = this.getRoleForOrganization(currentUser, organizationId);
-
     if (
       role === 'SUPER_ADMIN' ||
       role === 'MANAGER' ||
-      role === 'TEAM_LEADER' ||
-      ownerId === currentUser.sub
+      role === 'TEAM_LEADER'
     ) {
       return;
     }
 
-    throw new ForbiddenException('You are not allowed to edit this project.');
+    throw new ForbiddenException('You are not allowed to manage projects.');
   }
 
-  private async assertSlugAvailable(
+  private assertCanViewProject(
+    currentUser: JwtUser,
     organizationId: string,
-    slug: string,
-    ignoredProjectId?: string,
+    project: { members?: Array<{ userId: string }> },
   ) {
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+
+    if (role !== 'MEMBER') return;
+    if (project.members?.some((member) => member.userId === currentUser.sub)) {
+      return;
+    }
+
+    throw new ForbiddenException('You can only view your projects.');
+  }
+
+  private assertValidDateRange(startDate?: Date, endDate?: Date) {
+    if (startDate && endDate && endDate < startDate) {
+      throw new BadRequestException('End date must be after start date.');
+    }
+  }
+
+  private async assertSlugAvailable(organizationId: string, slug: string) {
     const existing = await this.prisma.project.findUnique({
       where: {
         organizationId_slug: {
@@ -1001,10 +620,8 @@ export class ProjectsService {
       },
     });
 
-    if (existing && existing.id !== ignoredProjectId) {
-      throw new ConflictException(
-        'Project slug is already used in this organization.',
-      );
+    if (existing) {
+      throw new ConflictException('Project slug is already in use.');
     }
   }
 
@@ -1016,7 +633,6 @@ export class ProjectsService {
       where: {
         id: teamId,
         organizationId,
-        isActive: true,
       },
       select: {
         id: true,
@@ -1024,14 +640,13 @@ export class ProjectsService {
     });
 
     if (!team) {
-      throw new NotFoundException('Team not found in this organization.');
+      throw new NotFoundException('Team not found.');
     }
   }
 
   private async assertActiveOrganizationMember(
     organizationId: string,
     userId: string,
-    message: string,
   ) {
     const membership = await this.prisma.organizationMembership.findUnique({
       where: {
@@ -1046,13 +661,27 @@ export class ProjectsService {
     });
 
     if (!membership || membership.status !== 'ACTIVE') {
-      throw new ForbiddenException(message);
+      throw new ForbiddenException(
+        'User must be an active member of this organization.',
+      );
     }
   }
 
-  private assertValidDateRange(startDate?: Date, endDate?: Date) {
-    if (startDate && endDate && endDate < startDate) {
-      throw new BadRequestException('End date must be after start date.');
+  private async assertProjectMember(projectId: string, userId: string) {
+    const member = await this.prisma.projectMember.findUnique({
+      where: {
+        projectId_userId: {
+          projectId,
+          userId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!member) {
+      throw new ForbiddenException('You are not a member of this project.');
     }
   }
 
@@ -1076,8 +705,60 @@ export class ProjectsService {
     return project;
   }
 
+  private listProjectMembers(projectId: string) {
+    return this.prisma.projectMember.findMany({
+      where: {
+        projectId,
+      },
+      orderBy: {
+        joinedAt: 'asc',
+      },
+      select: {
+        id: true,
+        userId: true,
+        joinedAt: true,
+        user: {
+          select: userSummarySelect,
+        },
+      },
+    });
+  }
+
+  private async getProjectReviewers(
+    organizationId: string,
+    ownerId: string,
+    teamId: string | null,
+  ) {
+    const reviewers = new Set<string>([ownerId]);
+
+    if (teamId) {
+      const team = await this.prisma.team.findFirst({
+        where: {
+          id: teamId,
+          organizationId,
+        },
+        select: {
+          leaderId: true,
+        },
+      });
+      if (team?.leaderId) reviewers.add(team.leaderId);
+    }
+
+    return [...reviewers];
+  }
+
+  private emptyTaskSummary(): TaskSummary {
+    return {
+      TODO: 0,
+      IN_PROGRESS: 0,
+      IN_REVIEW: 0,
+      DONE: 0,
+      CANCELLED: 0,
+    };
+  }
+
   private async getTaskSummaries(projectIds: string[], assigneeId?: string) {
-    const summaries = new Map<string, Record<TaskStatus, number>>();
+    const summaries = new Map<string, TaskSummary>();
 
     for (const projectId of projectIds) {
       summaries.set(projectId, this.emptyTaskSummary());
@@ -1101,26 +782,13 @@ export class ProjectsService {
     });
 
     for (const row of rows) {
-      if (!row.projectId) {
-        continue;
-      }
-
+      if (!row.projectId) continue;
       const summary = summaries.get(row.projectId) ?? this.emptyTaskSummary();
       summary[row.status] = row._count._all;
       summaries.set(row.projectId, summary);
     }
 
     return summaries;
-  }
-
-  private emptyTaskSummary(): Record<TaskStatus, number> {
-    return taskStatuses.reduce(
-      (summary, status) => ({
-        ...summary,
-        [status]: 0,
-      }),
-      {} as Record<TaskStatus, number>,
-    );
   }
 
   private mapProjectListItem(
@@ -1144,14 +812,16 @@ export class ProjectsService {
     taskSummary = this.emptyTaskSummary(),
   ) {
     return {
-      ...project,
-      memberCount: project._count.members,
-      taskCount: Object.values(taskSummary).reduce(
-        (total, count) => total + count,
-        0,
-      ),
-      taskSummary,
-      _count: undefined,
+      ...this.mapProjectListItem(project, taskSummary),
+      members: project.members,
+    };
+  }
+
+  private mapProjectLeaveRequest(request: ProjectLeaveRequestRow) {
+    return {
+      ...request,
+      memberId: request.requesterId,
+      member: request.requester,
     };
   }
 }

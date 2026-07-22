@@ -197,7 +197,6 @@ export class ActivityService {
         organizationId,
       },
       select: {
-        id: true,
         assigneeId: true,
       },
     });

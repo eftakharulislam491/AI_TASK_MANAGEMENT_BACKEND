@@ -1,59 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { renderFile } from 'ejs';
-import nodemailer, { type Transporter } from 'nodemailer';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { renderFile } from 'ejs';
+import nodemailer from 'nodemailer';
 import type { AppEnv } from '../config/env';
-
-type InvitationEmailInput = {
-  to: string;
-  organizationName: string;
-  inviteUrl: string;
-  inviterName?: string;
-  message?: string;
-  expiresAt?: Date;
-};
-
-type TaskEmailInput = {
-  to: string;
-  taskTitle: string;
-  taskUrl?: string;
-  assigneeName?: string;
-  deadline?: Date | string | null;
-};
-
-type DailyDigestTask = {
-  title: string;
-  status: string;
-  priority: string;
-  projectName?: string;
-  taskUrl?: string;
-  deadline?: Date | string | null;
-  isOverdue: boolean;
-};
-
-type DailyDigestEmailInput = {
-  to: string;
-  recipientName?: string;
-  dashboardUrl?: string;
-  totalCount: number;
-  overdueCount: number;
-  dueSoonCount: number;
-  tasks: DailyDigestTask[];
-};
-
-type RoleChangeEmailInput = {
-  to: string;
-  recipientName?: string;
-  requesterName: string;
-  targetName: string;
-  currentRole: string;
-  requestedRole: string;
-  reason?: string | null;
-  decision?: 'APPROVED' | 'REJECTED';
-  reviewNote?: string | null;
-};
 
 type TemplateName =
   | 'invitation'
@@ -64,11 +15,59 @@ type TemplateName =
   | 'role-change-requested'
   | 'role-change-reviewed';
 
+type InvitationEmailInput = {
+  to: string;
+  inviterName?: string;
+  organizationName: string;
+  acceptUrl?: string;
+  inviteUrl?: string;
+  expiresAt?: Date;
+  message?: string;
+};
+
+type TaskEmailInput = {
+  to: string;
+  taskTitle: string;
+  taskUrl: string;
+  assigneeName?: string;
+  deadline?: Date | null;
+};
+
+type DailyDigestEmailInput = {
+  to: string;
+  recipientName?: string;
+  dashboardUrl: string;
+  totalCount: number;
+  overdueCount: number;
+  dueSoonCount: number;
+  tasks: Array<{
+    title: string;
+    status: string;
+    priority: string;
+    projectName?: string | null;
+    taskUrl: string;
+    deadline?: Date | null;
+    isOverdue: boolean;
+  }>;
+};
+
+type RoleChangeEmailInput = {
+  to: string;
+  recipientName?: string;
+  requesterName?: string;
+  targetName?: string;
+  currentRole?: string;
+  requestedRole?: string;
+  status?: string;
+  decision?: string;
+  reason?: string | null;
+  reviewNote?: string | null;
+  requestsUrl?: string;
+};
+
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
-  private transporter?: Transporter;
-  private smtpWarningShown = false;
 
   constructor(private readonly configService: ConfigService<AppEnv, true>) {}
 
@@ -77,14 +76,12 @@ export class MailService {
       to: input.to,
       subject: `Invitation to join ${input.organizationName}`,
       html: await this.renderTemplate('invitation', {
-        organizationName: input.organizationName,
-        inviteUrl: input.inviteUrl,
-        inviterName: input.inviterName,
-        message: input.message,
+        ...input,
+        acceptUrl: input.acceptUrl ?? input.inviteUrl,
+        inviteUrl: input.inviteUrl ?? input.acceptUrl,
         expiresAt: input.expiresAt
           ? this.formatDate(input.expiresAt)
           : undefined,
-        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -92,12 +89,10 @@ export class MailService {
   async sendTaskAssignedEmail(input: TaskEmailInput) {
     await this.sendMail({
       to: input.to,
-      subject: `Task assigned: ${input.taskTitle}`,
+      subject: `New task assigned: ${input.taskTitle}`,
       html: await this.renderTemplate('task-assigned', {
-        taskTitle: input.taskTitle,
-        taskUrl: input.taskUrl,
-        assigneeName: input.assigneeName,
-        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
+        ...input,
+        deadline: input.deadline ? this.formatDate(input.deadline) : undefined,
       }),
     });
   }
@@ -105,12 +100,10 @@ export class MailService {
   async sendDeadlineReminderEmail(input: TaskEmailInput) {
     await this.sendMail({
       to: input.to,
-      subject: `Deadline reminder: ${input.taskTitle}`,
+      subject: `Task deadline approaching: ${input.taskTitle}`,
       html: await this.renderTemplate('deadline-reminder', {
-        taskTitle: input.taskTitle,
-        taskUrl: input.taskUrl,
+        ...input,
         deadline: input.deadline ? this.formatDate(input.deadline) : undefined,
-        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -118,12 +111,10 @@ export class MailService {
   async sendOverdueTaskEmail(input: TaskEmailInput) {
     await this.sendMail({
       to: input.to,
-      subject: `Overdue task: ${input.taskTitle}`,
+      subject: `Task overdue: ${input.taskTitle}`,
       html: await this.renderTemplate('overdue-task', {
-        taskTitle: input.taskTitle,
-        taskUrl: input.taskUrl,
+        ...input,
         deadline: input.deadline ? this.formatDate(input.deadline) : undefined,
-        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -131,18 +122,13 @@ export class MailService {
   async sendDailyDigestEmail(input: DailyDigestEmailInput) {
     await this.sendMail({
       to: input.to,
-      subject: `Daily task digest: ${input.totalCount} active tasks`,
+      subject: 'Your TaskFlow daily digest',
       html: await this.renderTemplate('daily-digest', {
-        recipientName: input.recipientName,
-        dashboardUrl: input.dashboardUrl,
-        totalCount: input.totalCount,
-        overdueCount: input.overdueCount,
-        dueSoonCount: input.dueSoonCount,
+        ...input,
         tasks: input.tasks.map((task) => ({
           ...task,
           deadline: task.deadline ? this.formatDate(task.deadline) : undefined,
         })),
-        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
       }),
     });
   }
@@ -150,48 +136,35 @@ export class MailService {
   async sendRoleChangeRequestedEmail(input: RoleChangeEmailInput) {
     await this.sendMail({
       to: input.to,
-      subject: `Role change requested: ${input.currentRole} to ${input.requestedRole}`,
-      html: await this.renderTemplate('role-change-requested', {
-        ...input,
-        requestsUrl: `${this.configService.get('APP_URL', { infer: true })}/dashboard/requests`,
-        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
-      }),
+      subject: 'Role change request submitted',
+      html: await this.renderTemplate('role-change-requested', input),
     });
   }
 
   async sendRoleChangeReviewedEmail(input: RoleChangeEmailInput) {
     await this.sendMail({
       to: input.to,
-      subject: `Role change request ${input.decision?.toLowerCase()}`,
-      html: await this.renderTemplate('role-change-reviewed', {
-        ...input,
-        requestsUrl: `${this.configService.get('APP_URL', { infer: true })}/dashboard/requests`,
-        appName: this.configService.get('SMTP_FROM_NAME', { infer: true }),
-      }),
+      subject: 'Role change request reviewed',
+      html: await this.renderTemplate('role-change-reviewed', input),
     });
   }
 
-  private getTransporter() {
-    if (this.transporter) {
-      return this.transporter;
-    }
-
+  private async sendMail(input: { to: string; subject: string; html: string }) {
     const host = this.configService.get('SMTP_HOST', { infer: true });
     const user = this.configService.get('SMTP_USER', { infer: true });
     const pass = this.configService.get('SMTP_PASS', { infer: true });
+    const fromEmail = this.configService.get('SMTP_FROM_EMAIL', {
+      infer: true,
+    });
 
-    if (!host || !user || !pass) {
-      if (!this.smtpWarningShown) {
-        this.logger.warn(
-          'SMTP env is missing. Mail notifications are currently disabled.',
-        );
-        this.smtpWarningShown = true;
-      }
-
-      return null;
+    if (!host || !user || !pass || !fromEmail) {
+      this.logger.warn(
+        `SMTP is not configured. Skipping email "${input.subject}" to ${input.to}.`,
+      );
+      return;
     }
 
-    this.transporter = nodemailer.createTransport({
+    const transporter = nodemailer.createTransport({
       host,
       port: this.configService.get('SMTP_PORT', { infer: true }),
       secure: this.configService.get('SMTP_SECURE', { infer: true }),
@@ -200,38 +173,17 @@ export class MailService {
         pass,
       },
     });
+    const fromName = this.configService.get('SMTP_FROM_NAME', { infer: true });
 
-    return this.transporter;
+    await transporter.sendMail({
+      from: `"${fromName}" <${fromEmail}>`,
+      to: input.to,
+      subject: input.subject,
+      html: input.html,
+    });
   }
 
-  private async sendMail(input: { to: string; subject: string; html: string }) {
-    const transporter = this.getTransporter();
-
-    if (!transporter) {
-      return;
-    }
-
-    try {
-      await transporter.sendMail({
-        from: this.getFromAddress(),
-        ...input,
-      });
-    } catch (error) {
-      this.logger.error(
-        `Failed to send mail to ${input.to}`,
-        error instanceof Error ? error.stack : String(error),
-      );
-    }
-  }
-
-  private getFromAddress() {
-    const email = this.configService.get('SMTP_FROM_EMAIL', { infer: true });
-    const name = this.configService.get('SMTP_FROM_NAME', { infer: true });
-
-    return email ? `"${name}" <${email}>` : name;
-  }
-
-  private async renderTemplate(
+  private renderTemplate(
     templateName: TemplateName,
     data: Record<string, unknown>,
   ) {

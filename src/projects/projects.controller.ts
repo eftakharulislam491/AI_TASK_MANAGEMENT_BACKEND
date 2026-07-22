@@ -60,30 +60,6 @@ export class ProjectsController {
     );
   }
 
-  @Patch('leave-requests/:requestId/review')
-  reviewProjectLeaveRequest(
-    @CurrentUser() currentUser: JwtUser,
-    @Param('requestId') requestId: string,
-    @Body() body: unknown,
-  ) {
-    return this.projectsService.reviewProjectLeaveRequest(
-      currentUser,
-      parseWithSchema(resourceIdValue, requestId),
-      parseWithSchema(reviewProjectLeaveRequestSchema, body),
-    );
-  }
-
-  @Get(':projectId')
-  getProject(
-    @CurrentUser() currentUser: JwtUser,
-    @Param('projectId') projectId: string,
-  ) {
-    return this.projectsService.getProject(
-      currentUser,
-      parseWithSchema(resourceIdValue, projectId),
-    );
-  }
-
   @Post(':projectId/leave-requests')
   createProjectLeaveRequest(
     @CurrentUser() currentUser: JwtUser,
@@ -94,6 +70,19 @@ export class ProjectsController {
       currentUser,
       parseWithSchema(resourceIdValue, projectId),
       parseWithSchema(createProjectLeaveRequestSchema, body),
+    );
+  }
+
+  @Patch('leave-requests/:requestId/review')
+  reviewProjectLeaveRequest(
+    @CurrentUser() currentUser: JwtUser,
+    @Param('requestId') requestId: string,
+    @Body() body: unknown,
+  ) {
+    return this.projectsService.reviewProjectLeaveRequest(
+      currentUser,
+      parseWithSchema(resourceIdValue, requestId),
+      parseWithSchema(reviewProjectLeaveRequestSchema, body),
     );
   }
 

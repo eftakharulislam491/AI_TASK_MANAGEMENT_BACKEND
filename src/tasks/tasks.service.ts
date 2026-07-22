@@ -5,9 +5,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { Prisma, Role, TaskPriority, TaskStatus } from '@prisma/client';
-import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
+import type { Prisma, Role, TaskStatus } from '@prisma/client';
 import { ActivityService } from '../activity/activity.service';
+import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 import { serializeResponse } from '../common/utils/response';
 import type { AppEnv } from '../config/env';
 import { MailService } from '../mail/mail.service';
@@ -124,6 +124,7 @@ const taskDetailSelect = {
 
 type TaskListRow = Prisma.TaskGetPayload<{ select: typeof taskListSelect }>;
 type TaskDetailRow = Prisma.TaskGetPayload<{ select: typeof taskDetailSelect }>;
+
 type OrganizationSettings = {
   autoAssignOnTaskCreate: boolean;
 };
@@ -165,6 +166,14 @@ export class TasksService {
   async createTask(currentUser: JwtUser, input: CreateTaskInput) {
     const organizationId = this.getOrganizationId(currentUser);
     this.assertCanCreateTask(currentUser, organizationId);
+
+    if (input.projectId) {
+      await this.assertProjectBelongsToOrganization(
+        organizationId,
+        input.projectId,
+      );
+    }
+
     const assigneeId =
       input.assigneeId ??
       (await this.resolveAutoAssigneeId(
@@ -180,13 +189,6 @@ export class TasksService {
           method: 'auto-assign',
         }
       : undefined;
-
-    if (input.projectId) {
-      await this.assertProjectBelongsToOrganization(
-        organizationId,
-        input.projectId,
-      );
-    }
 
     if (assigneeId) {
       await this.assertActiveOrganizationMember(organizationId, assigneeId);

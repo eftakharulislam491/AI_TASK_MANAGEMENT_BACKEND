@@ -28,10 +28,10 @@ export const projectLeaveRequestStatusSchema = z.enum([
 ]);
 
 export const createProjectSchema = z.object({
+  teamId: resourceIdValue.optional(),
   name: trimmedString,
   slug: slugValue,
   description: optionalTrimmedString,
-  teamId: resourceIdValue.optional(),
   startDate: z.coerce.date().optional(),
   endDate: z.coerce.date().optional(),
 });
@@ -47,22 +47,22 @@ export const addProjectMemberSchema = z.object({
 export const listProjectsQuerySchema = z.object({
   page: paginationPageValue,
   limit: paginationLimitValue,
-  search: optionalTrimmedString,
   status: projectStatusSchema.optional(),
   teamId: resourceIdValue.optional(),
+  ownerId: resourceIdValue.optional(),
+  search: optionalTrimmedString,
 });
 
 export const createProjectLeaveRequestSchema = z.object({
-  reason: trimmedString.max(1000),
+  reason: trimmedString,
 });
 
 export const listProjectLeaveRequestsQuerySchema = z.object({
   page: paginationPageValue,
   limit: paginationLimitValue,
+  scope: z.enum(['mine', 'pending', 'all']).default('mine'),
   status: projectLeaveRequestStatusSchema.optional(),
   projectId: resourceIdValue.optional(),
-  requesterId: resourceIdValue.optional(),
-  scope: z.enum(['mine', 'pending', 'all']).default('mine'),
 });
 
 export const reviewProjectLeaveRequestSchema = z.object({

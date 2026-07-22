@@ -7,7 +7,7 @@ import {
 import type { Prisma, Role } from '@prisma/client';
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { basename, extname, join } from 'node:path';
+import { extname, join } from 'node:path';
 import type { JwtUser } from '../auth/interfaces/jwt-user.interface';
 import { serializeResponse } from '../common/utils/response';
 import { PrismaService } from '../prisma/prisma.service';
@@ -194,13 +194,7 @@ export class AttachmentsService {
         id: attachmentId,
       },
     });
-
-    const localFileName = this.getLocalUploadName(attachment.fileUrl);
-    if (localFileName) {
-      await unlink(join(process.cwd(), 'uploads', localFileName)).catch(
-        () => undefined,
-      );
-    }
+    await this.deleteLocalUpload(attachment.fileUrl);
 
     return serializeResponse({
       message: 'Attachment deleted successfully.',
@@ -274,7 +268,11 @@ export class AttachmentsService {
         },
         select: {
           id: true,
-          task: { select: { assigneeId: true } },
+          task: {
+            select: {
+              assigneeId: true,
+            },
+          },
         },
       });
 
@@ -282,12 +280,11 @@ export class AttachmentsService {
         throw new NotFoundException('Comment not found.');
       }
 
-      this.assertCanAccessTask(
+      this.assertMemberTaskAccess(
         currentUser,
         organizationId,
         comment.task.assigneeId,
       );
-
       return;
     }
 
@@ -305,7 +302,10 @@ export class AttachmentsService {
       if (!project) {
         throw new NotFoundException('Project not found.');
       }
+      return;
     }
+
+    throw new BadRequestException('Attachment parent is required.');
   }
 
   private async assertTaskBelongsToOrganization(
@@ -319,7 +319,6 @@ export class AttachmentsService {
         organizationId,
       },
       select: {
-        id: true,
         assigneeId: true,
       },
     });
@@ -328,27 +327,31 @@ export class AttachmentsService {
       throw new NotFoundException('Task not found.');
     }
 
-    this.assertCanAccessTask(currentUser, organizationId, task.assigneeId);
+    this.assertMemberTaskAccess(currentUser, organizationId, task.assigneeId);
   }
 
-  private assertCanAccessTask(
+  private assertMemberTaskAccess(
     currentUser: JwtUser,
     organizationId: string,
     assigneeId: string | null,
   ) {
-    const role = this.getRoleForOrganization(currentUser, organizationId);
-    if (role !== 'MEMBER' || assigneeId === currentUser.sub) return;
-
-    throw new ForbiddenException('You can only access tasks assigned to you.');
+    if (
+      this.getRoleForOrganization(currentUser, organizationId) === 'MEMBER' &&
+      assigneeId !== currentUser.sub
+    ) {
+      throw new ForbiddenException(
+        'You can only access tasks assigned to you.',
+      );
+    }
   }
 
-  private getLocalUploadName(fileUrl: string) {
+  private async deleteLocalUpload(fileUrl: string) {
     try {
       const url = new URL(fileUrl);
-      if (!url.pathname.startsWith('/uploads/')) return null;
-      return basename(url.pathname);
+      if (!url.pathname.startsWith('/uploads/')) return;
+      await unlink(join(process.cwd(), url.pathname));
     } catch {
-      return null;
+      return;
     }
   }
 }
