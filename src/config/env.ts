@@ -28,7 +28,7 @@ const envSchema = z
         'JWT_REFRESH_EXPIRES_IN must look like 15m or 7d',
       )
       .default('7d'),
-    ALLOWED_ORIGINS: z.string().trim().default('http://localhost:3000'),
+    ALLOWED_ORIGINS: z.string().trim().default('http://localhost:4000'),
     OPENAI_API_KEY: z.string().trim().optional(),
     OPENROUTER_API_KEY: z.string().trim().optional(),
     OPENROUTER_EMBEDDING_MODEL: z
