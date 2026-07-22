@@ -20,6 +20,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProjectsModule } from './projects/projects.module';
 import { RAGModule } from './rag/rag.module';
+import { RequirementsModule } from './requirements/requirements.module';
 import { SchedulerModule } from './scheduler/scheduler.module';
 import { TasksModule } from './tasks/tasks.module';
 import { TeamsModule } from './teams/teams.module';
@@ -47,6 +48,7 @@ import { UsersModule } from './users/users.module';
     PrismaModule,
     ProjectsModule,
     RAGModule,
+    RequirementsModule,
     SchedulerModule,
     TasksModule,
     TeamsModule,

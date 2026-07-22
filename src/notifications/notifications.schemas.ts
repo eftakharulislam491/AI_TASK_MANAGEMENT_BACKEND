@@ -23,6 +23,7 @@ export const notificationTypeSchema = z.enum([
   'ROLE_CHANGED',
   'ROLE_CHANGE_REQUESTED',
   'ROLE_CHANGE_REVIEWED',
+  'REQUIREMENT_STATUS_CHANGED',
   'MENTION',
 ]);
 

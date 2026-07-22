@@ -94,6 +94,7 @@ enum NotificationType {
   ROLE_CHANGE_REQUESTED
   ROLE_CHANGE_REVIEWED
   ROLE_CHANGED
+  REQUIREMENT_STATUS_CHANGED
   MENTION
 }
 
@@ -101,6 +102,32 @@ enum AttachmentEntityType {
   TASK
   COMMENT
   PROJECT
+}
+
+enum RequirementStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  IMPLEMENTED
+  DEPRECATED
+}
+
+enum RequirementPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum RequirementType {
+  FEATURE_REQUEST
+  BUG_REPORT
+  CLIENT_REQUEST
+  REQUIREMENT_CHANGE
+  MEETING_NOTE
+  GENERAL
 }
 
 model User {
@@ -116,29 +143,35 @@ model User {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  currentOrganization   Organization?            @relation("CurrentOrganization", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
-  credential            Credential?
-  profile               UserProfile?
-  abilities             UserAbility[]
-  organizationsOwned    Organization[]           @relation("OrganizationOwner")
-  memberships           OrganizationMembership[]
-  joinRequestsSent      JoinRequest[]            @relation("JoinRequestSender")
-  joinRequestsReceived  JoinRequest[]            @relation("JoinRequestRecipient")
-  requestedRoleChanges  RoleChangeRequest[]      @relation("RoleChangeRequester")
-  targetedRoleChanges   RoleChangeRequest[]      @relation("RoleChangeTarget")
-  reviewedRoleChanges   RoleChangeRequest[]      @relation("RoleChangeReviewer")
-  projectLeaveRequests  ProjectLeaveRequest[]    @relation("ProjectLeaveRequester")
-  reviewedLeaveRequests ProjectLeaveRequest[]    @relation("ProjectLeaveReviewer")
-  teamMemberships       TeamMember[]
-  projectMemberships    ProjectMember[]
-  teamsLed              Team[]                   @relation("TeamLeader")
-  projectsOwned         Project[]                @relation("ProjectOwner")
-  tasksAssigned         Task[]                   @relation("TaskAssignee")
-  tasksReported         Task[]                   @relation("TaskReporter")
-  comments              Comment[]
-  attachments           Attachment[]
-  activityLogs          ActivityLog[]
-  notifications         Notification[]
+  currentOrganization    Organization?            @relation("CurrentOrganization", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
+  credential             Credential?
+  profile                UserProfile?
+  abilities              UserAbility[]
+  organizationsOwned     Organization[]           @relation("OrganizationOwner")
+  memberships            OrganizationMembership[]
+  joinRequestsSent       JoinRequest[]            @relation("JoinRequestSender")
+  joinRequestsReceived   JoinRequest[]            @relation("JoinRequestRecipient")
+  requestedRoleChanges   RoleChangeRequest[]      @relation("RoleChangeRequester")
+  targetedRoleChanges    RoleChangeRequest[]      @relation("RoleChangeTarget")
+  reviewedRoleChanges    RoleChangeRequest[]      @relation("RoleChangeReviewer")
+  projectLeaveRequests   ProjectLeaveRequest[]    @relation("ProjectLeaveRequester")
+  reviewedLeaveRequests  ProjectLeaveRequest[]    @relation("ProjectLeaveReviewer")
+  teamMemberships        TeamMember[]
+  projectMemberships     ProjectMember[]
+  teamsLed               Team[]                   @relation("TeamLeader")
+  projectsOwned          Project[]                @relation("ProjectOwner")
+  tasksAssigned          Task[]                   @relation("TaskAssignee")
+  tasksReported          Task[]                   @relation("TaskReporter")
+  comments               Comment[]
+  attachments            Attachment[]
+  activityLogs           ActivityLog[]
+  notifications          Notification[]
+  requirementsCreated    Requirement[]            @relation("RequirementCreator")
+  requirementsApproved   Requirement[]            @relation("RequirementApprover")
+  requirementVersions    RequirementVersion[]     @relation("RequirementVersionCreator")
+  requirementChanges     RequirementChangeLog[]   @relation("RequirementChangeActor")
+  requirementDiscussions RequirementDiscussion[]  @relation("RequirementDiscussionAuthor")
+  requirementAttachments RequirementAttachment[]  @relation("RequirementAttachmentUploader")
 
   @@index([currentOrganizationId])
   @@index([email, role])
@@ -180,6 +213,7 @@ model Organization {
   activityLogs         ActivityLog[]
   notifications        Notification[]
   documentEmbeddings   DocumentEmbedding[]
+  requirements         Requirement[]
 
   @@index([ownerId])
   @@index([name])
@@ -374,6 +408,7 @@ model Project {
   leaveRequests ProjectLeaveRequest[]
   tasks         Task[]
   attachments   Attachment[]
+  requirements  Requirement[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
@@ -438,13 +473,14 @@ model Task {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  project      Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  assignee     User?         @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  reporter     User          @relation("TaskReporter", fields: [reporterId], references: [id], onDelete: Restrict)
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project      Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  assignee     User?             @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  reporter     User              @relation("TaskReporter", fields: [reporterId], references: [id], onDelete: Restrict)
   comments     Comment[]
   attachments  Attachment[]
   activities   ActivityLog[]
+  requirements TaskRequirement[]
 
   @@index([organizationId, status, priority])
   @@index([projectId, status])
@@ -491,6 +527,132 @@ model Attachment {
   @@index([taskId])
   @@index([commentId])
   @@index([projectId])
+  @@index([uploadedById])
+}
+
+model Requirement {
+  id               String              @id @default(cuid())
+  organizationId   String
+  projectId        String?
+  title            String
+  description      String?
+  type             RequirementType     @default(GENERAL)
+  status           RequirementStatus   @default(DRAFT)
+  priority         RequirementPriority @default(MEDIUM)
+  source           String?
+  clientName       String?
+  clientEmail      String?
+  expectedDelivery DateTime?
+  actualDelivery   DateTime?
+  approvedById     String?
+  approvedAt       DateTime?
+  metadata         Json?
+  version          Int                 @default(1)
+  isLatestVersion  Boolean             @default(true)
+  createdById      String
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project        Project?                @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  createdBy      User                    @relation("RequirementCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  approvedBy     User?                   @relation("RequirementApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  tasks          TaskRequirement[]
+  discussions    RequirementDiscussion[]
+  attachments    RequirementAttachment[]
+  versionHistory RequirementVersion[]
+  changeLogs     RequirementChangeLog[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, projectId])
+  @@index([organizationId, type, priority])
+  @@index([organizationId, createdAt])
+}
+
+model RequirementVersion {
+  id            String              @id @default(cuid())
+  requirementId String
+  version       Int
+  title         String
+  description   String?
+  status        RequirementStatus
+  priority      RequirementPriority
+  type          RequirementType
+  changeSummary String?
+  metadata      Json?
+  createdById   String
+  createdAt     DateTime            @default(now())
+
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  createdBy   User        @relation("RequirementVersionCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([requirementId, version])
+  @@index([requirementId, version])
+}
+
+model RequirementChangeLog {
+  id            String   @id @default(cuid())
+  requirementId String
+  field         String
+  oldValue      String?
+  newValue      String?
+  changedById   String
+  changeNote    String?
+  createdAt     DateTime @default(now())
+
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  changedBy   User        @relation("RequirementChangeActor", fields: [changedById], references: [id], onDelete: Restrict)
+
+  @@index([requirementId, createdAt])
+}
+
+model TaskRequirement {
+  id            String   @id @default(cuid())
+  taskId        String
+  requirementId String
+  relationType  String?
+  createdAt     DateTime @default(now())
+
+  task        Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, requirementId])
+  @@index([taskId])
+  @@index([requirementId])
+}
+
+model RequirementDiscussion {
+  id            String   @id @default(cuid())
+  requirementId String
+  authorId      String
+  body          String
+  parentId      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  requirement Requirement             @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  author      User                    @relation("RequirementDiscussionAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  parent      RequirementDiscussion?  @relation("DiscussionReply", fields: [parentId], references: [id], onDelete: SetNull)
+  replies     RequirementDiscussion[] @relation("DiscussionReply")
+
+  @@index([requirementId, createdAt])
+  @@index([parentId])
+}
+
+model RequirementAttachment {
+  id            String   @id @default(cuid())
+  requirementId String
+  uploadedById  String
+  fileName      String
+  fileUrl       String
+  fileSize      Int?
+  mimeType      String?
+  createdAt     DateTime @default(now())
+
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  uploadedBy  User        @relation("RequirementAttachmentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@index([requirementId])
   @@index([uploadedById])
 }
 
