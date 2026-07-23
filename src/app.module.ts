@@ -14,6 +14,7 @@ import { TenantContextMiddleware } from './common/middleware/tenant-context.midd
 import { CommentsModule } from './comments/comments.module';
 import { validateEnv } from './config/env';
 import { HealthModule } from './health/health.module';
+import { GitHubModule } from './github/github.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { MailModule } from './mail/mail.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
@@ -42,6 +43,7 @@ import { UsersModule } from './users/users.module';
     AttachmentsModule,
     AuthModule,
     CommentsModule,
+    GitHubModule,
     HealthModule,
     InvitationsModule,
     MailModule,

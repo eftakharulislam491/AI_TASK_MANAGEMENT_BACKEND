@@ -17,7 +17,7 @@ import { createCorsOptionsDelegate } from './config/cors';
 import { PrismaService } from './prisma/prisma.service';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const configService = app.get<ConfigService<AppEnv, true>>(ConfigService);
   const port = configService.getOrThrow('PORT', { infer: true });
   const nodeEnv = configService.getOrThrow('NODE_ENV', { infer: true });

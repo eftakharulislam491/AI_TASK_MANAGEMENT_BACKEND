@@ -105,6 +105,9 @@ enum NotificationType {
   TASK_REASSIGNMENT_REVIEWED
   TASK_BLOCKED
   WORKLOAD_IMBALANCE
+  GITHUB_PR_REVIEW_COMPLETED
+  GITHUB_PR_REVIEW_FAILED
+  GITHUB_PR_DECISION
   MENTION
 }
 
@@ -138,6 +141,41 @@ enum RequirementType {
   REQUIREMENT_CHANGE
   MEETING_NOTE
   GENERAL
+}
+
+enum GitHubPullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+}
+
+enum GitHubAIReviewStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  NEEDS_ATTENTION
+}
+
+enum GitHubPRDecision {
+  PENDING
+  APPROVED
+  CHANGES_REQUESTED
+  REJECTED
+}
+
+enum GitHubTestStatus {
+  DISABLED
+  PENDING
+  RUNNING
+  PASSED
+  FAILED
+  SKIPPED
+}
+
+enum GitHubReviewTrigger {
+  WEBHOOK
+  MANUAL
 }
 
 model User {
@@ -186,6 +224,10 @@ model User {
   reassignmentFrom        TaskReassignmentRequest[] @relation("ReassignmentCurrentAssignee")
   reassignmentSuggestions TaskReassignmentRequest[] @relation("ReassignmentSuggestedAssignee")
   reassignmentReviews     TaskReassignmentRequest[] @relation("ReassignmentReviewer")
+  githubConnections       GitHubConnection[]
+  githubPullRequests      GitHubPullRequest[]       @relation("GitHubPullRequestAuthor")
+  githubDecisions         GitHubPullRequest[]       @relation("GitHubPullRequestDecisionActor")
+  githubReviewReports     GitHubPRReviewReport[]    @relation("GitHubReviewTriggerActor")
 
   @@index([currentOrganizationId])
   @@index([email, role])
@@ -229,6 +271,10 @@ model Organization {
   documentEmbeddings       DocumentEmbedding[]
   requirements             Requirement[]
   taskReassignmentRequests TaskReassignmentRequest[]
+  githubConnections        GitHubConnection[]
+  githubRepositories       GitHubRepository[]
+  githubPullRequests       GitHubPullRequest[]
+  githubWebhookDeliveries  GitHubWebhookDelivery[]
 
   @@index([ownerId])
   @@index([name])
@@ -416,14 +462,15 @@ model Project {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  organization  Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  team          Team?                 @relation(fields: [teamId], references: [id], onDelete: SetNull)
-  owner         User                  @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  members       ProjectMember[]
-  leaveRequests ProjectLeaveRequest[]
-  tasks         Task[]
-  attachments   Attachment[]
-  requirements  Requirement[]
+  organization       Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  team               Team?                 @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  owner              User                  @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  members            ProjectMember[]
+  leaveRequests      ProjectLeaveRequest[]
+  tasks              Task[]
+  attachments        Attachment[]
+  requirements       Requirement[]
+  githubRepositories GitHubRepository[]
 
   @@unique([organizationId, slug])
   @@index([organizationId, status])
@@ -700,6 +747,189 @@ model RequirementAttachment {
 
   @@index([requirementId])
   @@index([uploadedById])
+}
+
+model GitHubConnection {
+  id             String    @id @default(cuid())
+  organizationId String
+  userId         String
+  githubUserId   String
+  githubLogin    String
+  accessToken    String
+  refreshToken   String?
+  scopes         String[]  @default([])
+  tokenExpiresAt DateTime?
+  isActive       Boolean   @default(true)
+  connectedAt    DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositories GitHubRepository[]
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, githubLogin])
+  @@index([githubUserId])
+}
+
+model GitHubRepository {
+  id                   String    @id @default(cuid())
+  organizationId       String
+  connectionId         String
+  projectId            String?
+  githubRepositoryId   String
+  owner                String
+  name                 String
+  fullName             String
+  description          String?
+  defaultBranch        String    @default("main")
+  isPrivate            Boolean   @default(false)
+  isActive             Boolean   @default(true)
+  webhookId            String?
+  webhookSecret        String
+  autoReviewEnabled    Boolean   @default(true)
+  autoMergeOnPass      Boolean   @default(false)
+  aiScoreThreshold     Int       @default(80)
+  mergeMethod          String    @default("squash")
+  testEnabled          Boolean   @default(false)
+  testCommand          String?
+  maxContextCharacters Int       @default(60000)
+  lastSyncedAt         DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connection   GitHubConnection        @relation(fields: [connectionId], references: [id], onDelete: Restrict)
+  project      Project?                @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  pullRequests GitHubPullRequest[]
+  deliveries   GitHubWebhookDelivery[]
+
+  @@unique([organizationId, githubRepositoryId])
+  @@index([organizationId, isActive])
+  @@index([connectionId])
+  @@index([projectId])
+}
+
+model GitHubPullRequest {
+  id                  String                 @id @default(cuid())
+  organizationId      String
+  repositoryId        String
+  githubPullRequestId String
+  number              Int
+  title               String
+  body                String?
+  htmlUrl             String
+  authorLogin         String
+  authorId            String?
+  state               GitHubPullRequestState @default(OPEN)
+  isDraft             Boolean                @default(false)
+  baseRef             String
+  baseSha             String
+  headRef             String
+  headSha             String
+  additions           Int                    @default(0)
+  deletions           Int                    @default(0)
+  changedFiles        Int                    @default(0)
+  mergeable           Boolean?
+  aiReviewStatus      GitHubAIReviewStatus   @default(PENDING)
+  aiScore             Int?
+  aiReviewSummary     String?
+  finalDecision       GitHubPRDecision       @default(PENDING)
+  finalDecidedById    String?
+  finalDecisionNote   String?
+  testRunStatus       GitHubTestStatus       @default(DISABLED)
+  testOutput          String?
+  lastReviewHeadSha   String?
+  lastReviewError     String?
+  openedAt            DateTime
+  closedAt            DateTime?
+  mergedAt            DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  organization   Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository     GitHubRepository        @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  author         User?                   @relation("GitHubPullRequestAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  finalDecidedBy User?                   @relation("GitHubPullRequestDecisionActor", fields: [finalDecidedById], references: [id], onDelete: SetNull)
+  files          GitHubPullRequestFile[]
+  reports        GitHubPRReviewReport[]
+
+  @@unique([repositoryId, number])
+  @@index([organizationId, state, updatedAt])
+  @@index([organizationId, aiReviewStatus])
+  @@index([repositoryId, headSha])
+  @@index([authorId])
+}
+
+model GitHubPullRequestFile {
+  id                String    @id @default(cuid())
+  pullRequestId     String
+  path              String
+  previousPath      String?
+  status            String
+  additions         Int       @default(0)
+  deletions         Int       @default(0)
+  changes           Int       @default(0)
+  patch             String?
+  previousContent   String?
+  proposedContent   String?
+  language          String?
+  isBinary          Boolean   @default(false)
+  isReviewable      Boolean   @default(true)
+  contextCharacters Int       @default(0)
+  aiScore           Int?
+  aiReviewJson      Json?
+  aiSummary         String?
+  reviewedAt        DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@unique([pullRequestId, path])
+  @@index([pullRequestId, isReviewable])
+}
+
+model GitHubPRReviewReport {
+  id              String              @id @default(cuid())
+  pullRequestId   String
+  version         Int
+  headSha         String
+  trigger         GitHubReviewTrigger
+  triggeredById   String?
+  aiScore         Int
+  aiReviewJson    Json
+  reportMarkdown  String
+  testSummaryJson Json?
+  contextStats    Json?
+  decision        GitHubPRDecision
+  createdAt       DateTime            @default(now())
+
+  pullRequest GitHubPullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  triggeredBy User?             @relation("GitHubReviewTriggerActor", fields: [triggeredById], references: [id], onDelete: SetNull)
+
+  @@unique([pullRequestId, version])
+  @@index([pullRequestId, createdAt])
+  @@index([triggeredById])
+}
+
+model GitHubWebhookDelivery {
+  deliveryId     String    @id
+  organizationId String
+  repositoryId   String
+  event          String
+  action         String?
+  headSha        String?
+  status         String    @default("RECEIVED")
+  errorMessage   String?
+  receivedAt     DateTime  @default(now())
+  processedAt    DateTime?
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository   GitHubRepository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, receivedAt])
+  @@index([repositoryId, receivedAt])
 }
 
 model ActivityLog {

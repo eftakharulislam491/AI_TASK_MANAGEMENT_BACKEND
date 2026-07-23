@@ -12,12 +12,12 @@ describe('cors config helpers', () => {
 
   it('adds the frontend app origin to the allowlist', () => {
     const allowedOrigins = buildAllowedOrigins(
-      'http://172-31-30-12,http://localhost:4000',
+      'http://172-31-30-12,http://localhost:3000',
       'http://15.134.85.143/invite/accept',
     );
 
     expect(allowedOrigins.has('http://15.134.85.143')).toBe(true);
-    expect(allowedOrigins.has('http://localhost:4000')).toBe(true);
+    expect(allowedOrigins.has('http://localhost:3000')).toBe(true);
   });
 
   it('allows requests from the configured allowlist', () => {

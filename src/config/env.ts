@@ -32,7 +32,7 @@ const envSchema = z
       .string()
       .trim()
       .default(
-        'http://15.134.85.143,http://15.134.85.143:3000,http://localhost:3000,http://localhost:4000,http://127.0.0.1:3000,http://127.0.0.1:4000',
+        'http://15.134.85.143,http://15.134.85.143:3000,http://localhost:3000,http://127.0.0.1:3000',
       ),
     OPENAI_API_KEY: z.string().trim().optional(),
     OPENROUTER_API_KEY: z.string().trim().optional(),
@@ -44,11 +44,28 @@ const envSchema = z
       .string()
       .trim()
       .default('nvidia/nemotron-3-super-120b-a12b:free'),
+    GITHUB_CLIENT_ID: z.string().trim().optional(),
+    GITHUB_CLIENT_SECRET: z.string().trim().optional(),
+    GITHUB_APP_ID: z.string().trim().optional(),
+    GITHUB_WEBHOOK_SECRET: z.string().trim().optional(),
+    API_PUBLIC_URL: z.url().trim().default('http://localhost:5000'),
+    ENCRYPTION_KEY: z
+      .string()
+      .trim()
+      .refine((value) => {
+        try {
+          return Buffer.from(value, 'base64').length === 32;
+        } catch {
+          return false;
+        }
+      }, 'ENCRYPTION_KEY must be a base64-encoded 32-byte key')
+      .optional(),
+    GITHUB_REVIEW_DAILY_LIMIT: z.coerce.number().int().min(1).default(100),
     REDIS_URL: z.string().trim().optional(),
     REDIS_HOST: z.string().trim().default('localhost'),
     REDIS_PORT: z.coerce.number().int().positive().default(6379),
     REDIS_PASSWORD: z.string().trim().optional(),
-    APP_URL: z.string().trim().default('http://localhost:4000'),
+    APP_URL: z.string().trim().default('http://localhost:3000'),
     SMTP_HOST: z.string().trim().optional(),
     SMTP_PORT: z.coerce.number().int().positive().default(587),
     SMTP_SECURE: z

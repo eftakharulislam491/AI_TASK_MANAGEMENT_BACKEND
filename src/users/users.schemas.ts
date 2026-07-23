@@ -130,9 +130,15 @@ export const cancelRoleChangeRequestSchema = z.object({
   reason: optionalTrimmedString,
 });
 
-export const updateOrganizationSettingsSchema = z.object({
-  autoAssignOnTaskCreate: z.boolean(),
-});
+export const updateOrganizationSettingsSchema = z
+  .object({
+    autoAssignOnTaskCreate: z.boolean().optional(),
+    githubIntegrationEnabled: z.boolean().optional(),
+    githubAutoReviewEnabled: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'At least one organization setting is required.',
+  });
 
 export type UpdateMyProfileInput = z.infer<typeof updateMyProfileSchema>;
 export type CreateUserAbilityInput = z.infer<typeof createUserAbilitySchema>;

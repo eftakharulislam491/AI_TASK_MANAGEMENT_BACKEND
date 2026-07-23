@@ -420,7 +420,15 @@ export class UsersService {
 
     const settings = {
       ...this.normalizeOrganizationSettings(existing.settings),
-      autoAssignOnTaskCreate: input.autoAssignOnTaskCreate,
+      ...(input.autoAssignOnTaskCreate !== undefined
+        ? { autoAssignOnTaskCreate: input.autoAssignOnTaskCreate }
+        : {}),
+      ...(input.githubIntegrationEnabled !== undefined
+        ? { githubIntegrationEnabled: input.githubIntegrationEnabled }
+        : {}),
+      ...(input.githubAutoReviewEnabled !== undefined
+        ? { githubAutoReviewEnabled: input.githubAutoReviewEnabled }
+        : {}),
     };
 
     const updated = await this.prisma.organization.update({
@@ -1627,6 +1635,8 @@ export class UsersService {
 
     return {
       autoAssignOnTaskCreate: value.autoAssignOnTaskCreate === true,
+      githubIntegrationEnabled: value.githubIntegrationEnabled !== false,
+      githubAutoReviewEnabled: value.githubAutoReviewEnabled === true,
     };
   }
 }
