@@ -33,9 +33,9 @@ import { UsersModule } from './users/users.module';
       validate: validateEnv,
     }),
     ThrottlerModule.forRoot([
-      { ttl: 1000, limit: 10 },
-      { ttl: 60000, limit: 100 },
-      { ttl: 3600000, limit: 1000 },
+      { name: 'short', ttl: 1000, limit: 30 },
+      { name: 'medium', ttl: 60000, limit: 100 },
+      { name: 'long', ttl: 3600000, limit: 1000 },
     ]),
     ActivityModule,
     AttachmentsModule,

@@ -46,6 +46,23 @@ const projectSummarySelect = {
   status: true,
 } satisfies Prisma.ProjectSelect;
 
+const linkedTaskSelect = {
+  id: true,
+  relationType: true,
+  createdAt: true,
+  task: {
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      priority: true,
+      assigneeId: true,
+      projectId: true,
+      deadline: true,
+    },
+  },
+} satisfies Prisma.TaskRequirementSelect;
+
 const requirementListSelect = {
   id: true,
   organizationId: true,
@@ -71,6 +88,7 @@ const requirementListSelect = {
   project: { select: projectSummarySelect },
   createdBy: { select: userSummarySelect },
   approvedBy: { select: userSummarySelect },
+  tasks: { select: linkedTaskSelect, orderBy: { createdAt: 'desc' } },
   _count: {
     select: {
       tasks: true,
@@ -81,23 +99,6 @@ const requirementListSelect = {
     },
   },
 } satisfies Prisma.RequirementSelect;
-
-const linkedTaskSelect = {
-  id: true,
-  relationType: true,
-  createdAt: true,
-  task: {
-    select: {
-      id: true,
-      title: true,
-      status: true,
-      priority: true,
-      assigneeId: true,
-      projectId: true,
-      deadline: true,
-    },
-  },
-} satisfies Prisma.TaskRequirementSelect;
 
 const discussionSelect = {
   id: true,
@@ -232,7 +233,7 @@ export class RequirementsService {
   async listRequirements(user: JwtUser, query: RequirementQueryInput) {
     const organizationId = this.getOrganizationId(user);
     const where = {
-      organizationId,
+      ...this.requirementAccessWhere(user, organizationId),
       ...(query.status ? { status: query.status } : {}),
       ...(query.type ? { type: query.type } : {}),
       ...(query.priority ? { priority: query.priority } : {}),
@@ -284,7 +285,7 @@ export class RequirementsService {
   async getRequirement(user: JwtUser, requirementId: string) {
     const organizationId = this.getOrganizationId(user);
     const requirement = await this.prisma.requirement.findFirst({
-      where: { id: requirementId, organizationId },
+      where: this.requirementAccessWhere(user, organizationId, requirementId),
       select: {
         ...requirementListSelect,
         tasks: { select: linkedTaskSelect, orderBy: { createdAt: 'desc' } },
@@ -756,7 +757,7 @@ export class RequirementsService {
   ) {
     const organizationId = this.getOrganizationId(user);
     if (managerOnly) this.assertManager(user, organizationId);
-    return this.findRequirement(organizationId, requirementId);
+    return this.findAccessibleRequirement(user, organizationId, requirementId);
   }
 
   private async findRequirement(organizationId: string, requirementId: string) {
@@ -768,7 +769,39 @@ export class RequirementsService {
   }
 
   private async assertRequirementAccess(user: JwtUser, requirementId: string) {
-    return this.findRequirement(this.getOrganizationId(user), requirementId);
+    const organizationId = this.getOrganizationId(user);
+    return this.findAccessibleRequirement(user, organizationId, requirementId);
+  }
+
+  private async findAccessibleRequirement(
+    user: JwtUser,
+    organizationId: string,
+    requirementId: string,
+  ) {
+    const requirement = await this.prisma.requirement.findFirst({
+      where: this.requirementAccessWhere(user, organizationId, requirementId),
+    });
+    if (!requirement) throw new NotFoundException('Requirement not found.');
+    return requirement;
+  }
+
+  private requirementAccessWhere(
+    user: JwtUser,
+    organizationId: string,
+    requirementId?: string,
+  ): Prisma.RequirementWhereInput {
+    const role = this.roleFor(user, organizationId);
+    return {
+      organizationId,
+      ...(requirementId ? { id: requirementId } : {}),
+      ...(role === 'MEMBER'
+        ? {
+            tasks: {
+              some: { task: { assigneeId: user.sub } },
+            },
+          }
+        : {}),
+    };
   }
 
   private async assertProject(organizationId: string, projectId: string) {

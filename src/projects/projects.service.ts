@@ -191,11 +191,22 @@ export class ProjectsService {
       ...(query.ownerId ? { ownerId: query.ownerId } : {}),
       ...(role === 'MEMBER'
         ? {
-            members: {
-              some: {
-                userId: currentUser.sub,
+            OR: [
+              {
+                members: {
+                  some: {
+                    userId: currentUser.sub,
+                  },
+                },
               },
-            },
+              {
+                tasks: {
+                  some: {
+                    assigneeId: currentUser.sub,
+                  },
+                },
+              },
+            ],
           }
         : {}),
       ...(query.search
@@ -253,7 +264,7 @@ export class ProjectsService {
       projectId,
       projectDetailSelect,
     );
-    this.assertCanViewProject(currentUser, organizationId, project);
+    await this.assertCanViewProject(currentUser, organizationId, project);
     const summaries = await this.getTaskSummaries([project.id]);
 
     return serializeResponse(
@@ -586,10 +597,10 @@ export class ProjectsService {
     throw new ForbiddenException('You are not allowed to manage projects.');
   }
 
-  private assertCanViewProject(
+  private async assertCanViewProject(
     currentUser: JwtUser,
     organizationId: string,
-    project: { members?: Array<{ userId: string }> },
+    project: { id: string; members?: Array<{ userId: string }> },
   ) {
     const role = this.getRoleForOrganization(currentUser, organizationId);
 
@@ -597,6 +608,16 @@ export class ProjectsService {
     if (project.members?.some((member) => member.userId === currentUser.sub)) {
       return;
     }
+
+    const assignedTask = await this.prisma.task.findFirst({
+      where: {
+        projectId: project.id,
+        organizationId,
+        assigneeId: currentUser.sub,
+      },
+      select: { id: true },
+    });
+    if (assignedTask) return;
 
     throw new ForbiddenException('You can only view your projects.');
   }
