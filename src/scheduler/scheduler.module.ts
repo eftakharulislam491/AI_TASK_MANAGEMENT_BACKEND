@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { MailModule } from '../mail/mail.module';
+import { MonitoringModule } from '../monitoring/monitoring.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { RAGModule } from '../rag/rag.module';
@@ -10,6 +11,7 @@ import { SchedulerService } from './scheduler.service';
   imports: [
     ScheduleModule.forRoot(),
     MailModule,
+    MonitoringModule,
     NotificationsModule,
     PrismaModule,
     RAGModule,

@@ -40,6 +40,7 @@ type DailyDigestEmailInput = {
   totalCount: number;
   overdueCount: number;
   dueSoonCount: number;
+  briefing?: string;
   tasks: Array<{
     title: string;
     status: string;

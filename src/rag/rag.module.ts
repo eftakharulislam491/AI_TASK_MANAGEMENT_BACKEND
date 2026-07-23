@@ -19,6 +19,6 @@ import { RAGService } from './rag.service';
     LLMService,
     RAGService,
   ],
-  exports: [RAGService],
+  exports: [RAGService, RedisService],
 })
 export class RAGModule {}

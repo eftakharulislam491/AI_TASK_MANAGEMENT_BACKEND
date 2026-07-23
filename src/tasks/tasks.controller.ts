@@ -16,12 +16,15 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { TenantAccessGuard } from '../common/guards/tenant-access.guard';
 import {
   assignTaskSchema,
+  createReassignmentRequestSchema,
   createTaskSchema,
+  listReassignmentRequestsSchema,
   listTasksQuerySchema,
   parseWithSchema,
   resourceIdValue,
   updateTaskSchema,
   updateTaskStatusSchema,
+  reviewReassignmentRequestSchema,
 } from './tasks.schemas';
 import { TasksService } from './tasks.service';
 
@@ -52,6 +55,17 @@ export class TasksController {
     return this.tasksService.getMyTasks(
       currentUser,
       parseWithSchema(listTasksQuerySchema, query),
+    );
+  }
+
+  @Get('reassignment-requests')
+  listReassignmentRequests(
+    @CurrentUser() currentUser: JwtUser,
+    @Query() query: unknown,
+  ) {
+    return this.tasksService.listReassignmentRequests(
+      currentUser,
+      parseWithSchema(listReassignmentRequestsSchema, query),
     );
   }
 
@@ -113,6 +127,32 @@ export class TasksController {
       currentUser,
       parseWithSchema(resourceIdValue, taskId),
       parseWithSchema(assignTaskSchema, body),
+    );
+  }
+
+  @Post(':taskId/reassignment-request')
+  requestReassignment(
+    @CurrentUser() currentUser: JwtUser,
+    @Param('taskId') taskId: string,
+    @Body() body: unknown,
+  ) {
+    return this.tasksService.requestReassignment(
+      currentUser,
+      parseWithSchema(resourceIdValue, taskId),
+      parseWithSchema(createReassignmentRequestSchema, body),
+    );
+  }
+
+  @Patch(':taskId/reassignment-request/review')
+  reviewReassignment(
+    @CurrentUser() currentUser: JwtUser,
+    @Param('taskId') taskId: string,
+    @Body() body: unknown,
+  ) {
+    return this.tasksService.reviewReassignment(
+      currentUser,
+      parseWithSchema(resourceIdValue, taskId),
+      parseWithSchema(reviewReassignmentRequestSchema, body),
     );
   }
 

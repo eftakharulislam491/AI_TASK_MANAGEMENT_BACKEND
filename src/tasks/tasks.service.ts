@@ -1,4 +1,6 @@
 import {
+  BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -17,10 +19,19 @@ import { RAGService } from '../rag/rag.service';
 import type {
   AssignTaskInput,
   CreateTaskInput,
+  CreateReassignmentRequestInput,
+  ListReassignmentRequestsInput,
   ListTasksQueryInput,
+  ReviewReassignmentRequestInput,
   UpdateTaskInput,
   UpdateTaskStatusInput,
 } from './tasks.schemas';
+import {
+  mapAiAssignmentSuggestions,
+  mapRankedCandidate,
+  rankAssignmentCandidates,
+  type RankedCandidate,
+} from './assignment-ranking.util';
 
 const userSummarySelect = {
   id: true,
@@ -122,32 +133,43 @@ const taskDetailSelect = {
   },
 } satisfies Prisma.TaskSelect;
 
+const reassignmentRequestSelect = {
+  id: true,
+  taskId: true,
+  organizationId: true,
+  requesterId: true,
+  currentAssigneeId: true,
+  suggestedAssigneeId: true,
+  status: true,
+  reason: true,
+  reviewNote: true,
+  aiConfidence: true,
+  aiReason: true,
+  reviewedById: true,
+  reviewedAt: true,
+  createdAt: true,
+  updatedAt: true,
+  task: {
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      priority: true,
+      assigneeId: true,
+      projectId: true,
+    },
+  },
+  requester: { select: userSummarySelect },
+  currentAssignee: { select: userSummarySelect },
+  suggestedAssignee: { select: userSummarySelect },
+  reviewedBy: { select: userSummarySelect },
+} satisfies Prisma.TaskReassignmentRequestSelect;
+
 type TaskListRow = Prisma.TaskGetPayload<{ select: typeof taskListSelect }>;
 type TaskDetailRow = Prisma.TaskGetPayload<{ select: typeof taskDetailSelect }>;
 
 type OrganizationSettings = {
   autoAssignOnTaskCreate: boolean;
-};
-
-type AssignmentCandidate = {
-  id: string;
-  firstName: string;
-  lastName: string;
-  displayName: string | null;
-  role: Role;
-  profile: {
-    currentJobTitle: string | null;
-    yearsOfExperience: number | null;
-  } | null;
-  abilities: Array<{ name: string; keywords: string[] }>;
-  tasksAssigned: Array<{ estimatedHours: number | null }>;
-};
-
-type RankedCandidate = {
-  candidate: AssignmentCandidate;
-  score: number;
-  workload: number;
-  matchedSkills: string[];
 };
 
 @Injectable()
@@ -471,76 +493,206 @@ export class TasksService {
       description: true,
       tags: true,
     } satisfies Prisma.TaskSelect);
-    const projectCandidates = await this.getAutoAssignCandidates(
-      organizationId,
-      task.projectId ?? undefined,
+    return serializeResponse(
+      await this.buildAssignmentSuggestions(organizationId, task),
     );
-    const candidates = projectCandidates.length
-      ? projectCandidates
-      : await this.getAutoAssignCandidates(organizationId);
-    const ranked = this.rankAssignmentCandidates(task.tags, candidates);
+  }
 
-    if (ranked.length === 0) {
-      return serializeResponse({
-        suggestions: [],
-        analysisMethod: 'AI',
-        message: 'No eligible assignment candidates were found.',
-      });
-    }
+  async requestReassignment(
+    currentUser: JwtUser,
+    taskId: string,
+    input: CreateReassignmentRequestInput,
+  ) {
+    const organizationId = this.getOrganizationId(currentUser);
+    const task = await this.getTaskOrThrow(organizationId, taskId, {
+      id: true,
+      projectId: true,
+      title: true,
+      description: true,
+      status: true,
+      tags: true,
+      assigneeId: true,
+    } satisfies Prisma.TaskSelect);
 
-    try {
-      const aiResult = await this.ragService.generateStructuredResponse(
-        [
-          'Rank the eligible candidates for this task.',
-          'Return JSON with a suggestions array.',
-          'Each suggestion must contain userId, score (0-100), and a concise reason.',
-          'Use only candidate IDs supplied in the context.',
-          'Consider task meaning, skill relevance, workload, and experience.',
-        ].join(' '),
-        [
-          JSON.stringify({
-            task: {
-              title: task.title,
-              description: task.description,
-              requiredSkills: task.tags,
-            },
-            candidates: ranked.map((item) => ({
-              userId: item.candidate.id,
-              skills: item.candidate.abilities.flatMap((ability) => [
-                ability.name,
-                ...ability.keywords,
-              ]),
-              workload: item.workload,
-              yearsOfExperience: item.candidate.profile?.yearsOfExperience ?? 0,
-              baselineScore: item.score,
-            })),
-          }),
-        ],
-      );
-      const suggestions = this.mapAiAssignmentSuggestions(aiResult, ranked);
-
-      if (suggestions.length > 0) {
-        return serializeResponse({
-          suggestions,
-          analysisMethod: 'AI',
-        });
-      }
-    } catch (error) {
-      this.logger.warn(
-        `AI assignment ranking failed for task ${taskId}; using the backend scoring fallback. ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+    if (task.assigneeId !== currentUser.sub) {
+      throw new ForbiddenException(
+        'Only the current assignee can request reassignment.',
       );
     }
+    if (task.status === 'DONE' || task.status === 'CANCELLED') {
+      throw new BadRequestException(
+        'Completed or cancelled tasks cannot be reassigned.',
+      );
+    }
+    const pending = await this.prisma.taskReassignmentRequest.findFirst({
+      where: { taskId, status: 'PENDING' },
+      select: { id: true },
+    });
+    if (pending) {
+      throw new ConflictException(
+        'A reassignment request is already pending for this task.',
+      );
+    }
+
+    const analysis = await this.buildAssignmentSuggestions(
+      organizationId,
+      task,
+      [currentUser.sub],
+    );
+    const suggestion = analysis.suggestions[0];
+    const request = await this.prisma.taskReassignmentRequest.create({
+      data: {
+        taskId,
+        organizationId,
+        requesterId: currentUser.sub,
+        currentAssigneeId: currentUser.sub,
+        suggestedAssigneeId: suggestion?.user.id,
+        reason: input.reason,
+        aiConfidence: suggestion?.score,
+        aiReason: suggestion?.reason,
+      },
+      select: reassignmentRequestSelect,
+    });
+
+    await ActivityService.logActivity(this.prisma, {
+      organizationId,
+      actorId: currentUser.sub,
+      taskId,
+      projectId: task.projectId,
+      action: 'TASK_REASSIGNMENT_REQUESTED',
+      metadata: {
+        requestId: request.id,
+        suggestedAssigneeId: request.suggestedAssigneeId,
+      },
+    });
+    await this.notifyReassignmentReviewers(request);
 
     return serializeResponse({
-      suggestions: ranked
-        .slice(0, 5)
-        .map((item) =>
-          this.mapRankedCandidate(item, item.score, this.fallbackReason(item)),
-        ),
-      analysisMethod: 'HEURISTIC_FALLBACK',
-      message: 'AI provider unavailable; backend scoring fallback was used.',
+      message: suggestion
+        ? 'Reassignment request submitted with an AI recommendation.'
+        : 'Reassignment request submitted for manual review.',
+      request,
+      analysisMethod: analysis.analysisMethod,
+    });
+  }
+
+  async listReassignmentRequests(
+    currentUser: JwtUser,
+    input: ListReassignmentRequestsInput,
+  ) {
+    const organizationId = this.getOrganizationId(currentUser);
+    const role = this.getRoleForOrganization(currentUser, organizationId);
+    const canReview = ['SUPER_ADMIN', 'MANAGER', 'TEAM_LEADER'].includes(
+      role || '',
+    );
+    const where = {
+      organizationId,
+      ...(input.status ? { status: input.status } : {}),
+      ...(canReview ? {} : { requesterId: currentUser.sub }),
+    } satisfies Prisma.TaskReassignmentRequestWhereInput;
+    const skip = (input.page - 1) * input.limit;
+    const [items, total] = await Promise.all([
+      this.prisma.taskReassignmentRequest.findMany({
+        where,
+        select: reassignmentRequestSelect,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: input.limit,
+      }),
+      this.prisma.taskReassignmentRequest.count({ where }),
+    ]);
+
+    return serializeResponse({
+      items,
+      total,
+      page: input.page,
+      limit: input.limit,
+      totalPages: Math.max(1, Math.ceil(total / input.limit)),
+    });
+  }
+
+  async reviewReassignment(
+    currentUser: JwtUser,
+    taskId: string,
+    input: ReviewReassignmentRequestInput,
+  ) {
+    const organizationId = this.getOrganizationId(currentUser);
+    this.assertCanAssignTask(currentUser, organizationId);
+    const request = await this.prisma.taskReassignmentRequest.findFirst({
+      where: { taskId, organizationId, status: 'PENDING' },
+      select: reassignmentRequestSelect,
+    });
+    if (!request) {
+      throw new NotFoundException('Pending reassignment request not found.');
+    }
+    if (input.decision === 'APPROVED' && !request.suggestedAssigneeId) {
+      throw new BadRequestException(
+        'Select an eligible replacement before approving this request.',
+      );
+    }
+    if (request.suggestedAssigneeId) {
+      await this.assertActiveOrganizationMember(
+        organizationId,
+        request.suggestedAssigneeId,
+      );
+    }
+
+    const reviewed = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.taskReassignmentRequest.updateMany({
+        where: { id: request.id, status: 'PENDING' },
+        data: {
+          status: input.decision,
+          reviewNote: input.reviewNote,
+          reviewedById: currentUser.sub,
+          reviewedAt: new Date(),
+        },
+      });
+      if (!claimed.count) {
+        throw new ConflictException(
+          'This reassignment request has already been reviewed.',
+        );
+      }
+      if (input.decision === 'APPROVED' && request.suggestedAssigneeId) {
+        await tx.task.update({
+          where: { id: taskId },
+          data: {
+            assigneeId: request.suggestedAssigneeId,
+            aiMetadata: {
+              aiAssigned: true,
+              confidence: request.aiConfidence,
+              reassignmentRequestId: request.id,
+              assignedAt: new Date().toISOString(),
+            },
+          },
+        });
+      }
+      const updated = await tx.taskReassignmentRequest.findUniqueOrThrow({
+        where: { id: request.id },
+        select: reassignmentRequestSelect,
+      });
+      await ActivityService.logActivity(tx, {
+        organizationId,
+        actorId: currentUser.sub,
+        taskId,
+        projectId: request.task.projectId,
+        action: 'TASK_REASSIGNMENT_REVIEWED',
+        metadata: {
+          requestId: request.id,
+          decision: input.decision,
+          from: request.currentAssigneeId,
+          to:
+            input.decision === 'APPROVED' ? request.suggestedAssigneeId : null,
+        },
+      });
+      return updated;
+    });
+
+    await this.notifyReassignmentDecision(reviewed);
+    void this.syncTaskIndex(organizationId, taskId);
+
+    return serializeResponse({
+      message: `Reassignment request ${input.decision.toLowerCase()}.`,
+      request: reviewed,
     });
   }
 
@@ -869,9 +1021,147 @@ export class TasksService {
         ? candidates
         : await this.getAutoAssignCandidates(organizationId);
 
-    const ranked = this.rankAssignmentCandidates(input.tags ?? [], pool);
+    const ranked = rankAssignmentCandidates(input.tags ?? [], pool);
 
     return this.rerankAutoAssignCandidates(input, ranked);
+  }
+
+  private async buildAssignmentSuggestions(
+    organizationId: string,
+    task: {
+      id: string;
+      projectId: string | null;
+      title: string;
+      description: string | null;
+      tags: string[];
+    },
+    excludedUserIds: string[] = [],
+  ) {
+    const projectCandidates = await this.getAutoAssignCandidates(
+      organizationId,
+      task.projectId ?? undefined,
+    );
+    const candidates = projectCandidates.length
+      ? projectCandidates
+      : await this.getAutoAssignCandidates(organizationId);
+    const eligibleCandidates = candidates.filter(
+      (candidate) => !excludedUserIds.includes(candidate.id),
+    );
+    const ranked = rankAssignmentCandidates(task.tags, eligibleCandidates);
+
+    if (ranked.length === 0) {
+      return {
+        suggestions: [],
+        analysisMethod: 'HEURISTIC_FALLBACK' as const,
+        message: 'No eligible assignment candidates were found.',
+      };
+    }
+
+    try {
+      const aiResult = await this.ragService.generateStructuredResponse(
+        [
+          'Rank the eligible candidates for this task.',
+          'Return JSON with a suggestions array.',
+          'Each suggestion must contain userId, score (0-100), and a concise reason.',
+          'Use only candidate IDs supplied in the context.',
+          'Consider task meaning, skill relevance, workload, and experience.',
+        ].join(' '),
+        [
+          JSON.stringify({
+            task: {
+              title: task.title,
+              description: task.description,
+              requiredSkills: task.tags,
+            },
+            candidates: ranked.map((item) => ({
+              userId: item.candidate.id,
+              skills: item.candidate.abilities.flatMap((ability) => [
+                ability.name,
+                ...ability.keywords,
+              ]),
+              workload: item.workload,
+              yearsOfExperience: item.candidate.profile?.yearsOfExperience ?? 0,
+              baselineScore: item.score,
+            })),
+          }),
+        ],
+      );
+      const suggestions = mapAiAssignmentSuggestions(aiResult, ranked);
+      if (suggestions.length > 0) {
+        return { suggestions, analysisMethod: 'AI' as const };
+      }
+    } catch (error) {
+      this.logger.warn(
+        `AI assignment ranking failed for task ${task.id}; using fallback. ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    return {
+      suggestions: ranked.slice(0, 5).map((item) => mapRankedCandidate(item)),
+      analysisMethod: 'HEURISTIC_FALLBACK' as const,
+      message: 'AI provider unavailable; backend scoring fallback was used.',
+    };
+  }
+
+  private async notifyReassignmentReviewers(request: {
+    id: string;
+    organizationId: string;
+    requesterId: string;
+    task: { id: string; title: string };
+  }) {
+    const reviewers = await this.prisma.organizationMembership.findMany({
+      where: {
+        organizationId: request.organizationId,
+        status: 'ACTIVE',
+        role: { in: ['SUPER_ADMIN', 'MANAGER', 'TEAM_LEADER'] },
+        userId: { not: request.requesterId },
+      },
+      select: { userId: true },
+    });
+    await this.notificationsService.createBulkNotifications(
+      reviewers.map((item) => item.userId),
+      {
+        organizationId: request.organizationId,
+        type: 'TASK_REASSIGNMENT_REQUESTED',
+        title: 'Task reassignment requested',
+        body: `${request.task.title} needs a replacement assignee.`,
+        metadata: {
+          requestId: request.id,
+          taskId: request.task.id,
+        },
+      },
+    );
+  }
+
+  private async notifyReassignmentDecision(request: {
+    id: string;
+    organizationId: string;
+    requesterId: string;
+    suggestedAssigneeId: string | null;
+    status: string;
+    task: { id: string; title: string };
+  }) {
+    await this.notificationsService.createBulkNotifications(
+      [
+        request.requesterId,
+        ...(request.status === 'APPROVED' && request.suggestedAssigneeId
+          ? [request.suggestedAssigneeId]
+          : []),
+      ],
+      {
+        organizationId: request.organizationId,
+        type: 'TASK_REASSIGNMENT_REVIEWED',
+        title: 'Reassignment request reviewed',
+        body: `${request.task.title} reassignment was ${request.status.toLowerCase()}.`,
+        metadata: {
+          requestId: request.id,
+          taskId: request.task.id,
+          status: request.status,
+        },
+      },
+    );
   }
 
   private async rerankAutoAssignCandidates(
@@ -1016,91 +1306,6 @@ export class TasksService {
     });
   }
 
-  private rankAssignmentCandidates(
-    requiredSkills: string[],
-    candidates: AssignmentCandidate[],
-  ): RankedCandidate[] {
-    const required = requiredSkills.map((item) => item.toLowerCase());
-
-    return candidates
-      .map((candidate) => {
-        const abilityTokens = candidate.abilities.flatMap((ability) => [
-          ability.name,
-          ...ability.keywords,
-        ]);
-        const normalizedTokens = abilityTokens.map((item) =>
-          item.toLowerCase(),
-        );
-        const matchedSkills = requiredSkills.filter((_, index) =>
-          normalizedTokens.some((token) => token.includes(required[index])),
-        );
-        const activeHours = candidate.tasksAssigned.reduce(
-          (sum, task) => sum + (task.estimatedHours ?? 5),
-          0,
-        );
-        const workload = Math.min(100, Math.round((activeHours / 40) * 100));
-        const skillScore = required.length
-          ? Math.round((matchedSkills.length / required.length) * 100)
-          : 60;
-        const experienceScore = Math.min(
-          100,
-          (candidate.profile?.yearsOfExperience ?? 0) * 12,
-        );
-
-        return {
-          candidate,
-          workload,
-          matchedSkills,
-          score: Math.round(
-            skillScore * 0.45 + (100 - workload) * 0.35 + experienceScore * 0.2,
-          ),
-        };
-      })
-      .sort(
-        (left, right) =>
-          right.score - left.score ||
-          left.workload - right.workload ||
-          right.matchedSkills.length - left.matchedSkills.length,
-      );
-  }
-
-  private mapAiAssignmentSuggestions(
-    result: unknown,
-    ranked: RankedCandidate[],
-  ) {
-    const value = result as { suggestions?: unknown };
-    const raw = Array.isArray(result)
-      ? result
-      : Array.isArray(value?.suggestions)
-        ? value.suggestions
-        : [];
-    const candidatesById = new Map(
-      ranked.map((item) => [item.candidate.id, item]),
-    );
-
-    return raw
-      .map((entry) => {
-        if (!entry || typeof entry !== 'object') return null;
-        const item = entry as Record<string, unknown>;
-        const userId = typeof item.userId === 'string' ? item.userId : '';
-        const rankedCandidate = candidatesById.get(userId);
-        if (!rankedCandidate) return null;
-        const score = Number(item.score);
-        const safeScore = Number.isFinite(score)
-          ? Math.max(0, Math.min(100, Math.round(score)))
-          : rankedCandidate.score;
-        const reason =
-          typeof item.reason === 'string' && item.reason.trim()
-            ? item.reason.trim()
-            : this.fallbackReason(rankedCandidate);
-
-        return this.mapRankedCandidate(rankedCandidate, safeScore, reason);
-      })
-      .filter((item) => item !== null)
-      .sort((left, right) => right.score - left.score)
-      .slice(0, 5);
-  }
-
   private extractAiAssigneeId(result: unknown) {
     if (!result || typeof result !== 'object') {
       return null;
@@ -1110,43 +1315,6 @@ export class TasksService {
     const userId = value.userId ?? value.assigneeId ?? value.id;
 
     return typeof userId === 'string' && userId.trim() ? userId : null;
-  }
-
-  private mapRankedCandidate(
-    item: RankedCandidate,
-    score: number,
-    reason: string,
-  ) {
-    const candidate = item.candidate;
-    const name =
-      candidate.displayName ??
-      `${candidate.firstName} ${candidate.lastName}`.trim();
-
-    return {
-      user: {
-        id: candidate.id,
-        name,
-        firstName: candidate.firstName,
-        lastName: candidate.lastName,
-        displayName: candidate.displayName,
-        role: candidate.role,
-        title: candidate.profile?.currentJobTitle ?? '',
-        skills: candidate.abilities.map((ability) => ability.name),
-        experience: candidate.profile?.yearsOfExperience ?? 0,
-        capacity: item.workload,
-      },
-      score,
-      matchedSkills: item.matchedSkills,
-      reason,
-    };
-  }
-
-  private fallbackReason(item: RankedCandidate) {
-    return item.matchedSkills.length
-      ? `Matches ${item.matchedSkills.length} required skill${
-          item.matchedSkills.length === 1 ? '' : 's'
-        } with ${100 - item.workload}% availability.`
-      : `Has ${100 - item.workload}% availability for assignment review.`;
   }
 
   private async getOrganizationSettings(

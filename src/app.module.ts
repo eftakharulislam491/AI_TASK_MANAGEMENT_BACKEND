@@ -16,6 +16,7 @@ import { validateEnv } from './config/env';
 import { HealthModule } from './health/health.module';
 import { InvitationsModule } from './invitations/invitations.module';
 import { MailModule } from './mail/mail.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProjectsModule } from './projects/projects.module';
@@ -44,6 +45,7 @@ import { UsersModule } from './users/users.module';
     HealthModule,
     InvitationsModule,
     MailModule,
+    MonitoringModule,
     NotificationsModule,
     PrismaModule,
     ProjectsModule,

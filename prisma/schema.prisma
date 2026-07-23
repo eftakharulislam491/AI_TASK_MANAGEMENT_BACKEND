@@ -73,6 +73,12 @@ enum TaskPriority {
   URGENT
 }
 
+enum TaskReassignmentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum ProjectStatus {
   ACTIVE
   ON_HOLD
@@ -95,6 +101,10 @@ enum NotificationType {
   ROLE_CHANGE_REVIEWED
   ROLE_CHANGED
   REQUIREMENT_STATUS_CHANGED
+  TASK_REASSIGNMENT_REQUESTED
+  TASK_REASSIGNMENT_REVIEWED
+  TASK_BLOCKED
+  WORKLOAD_IMBALANCE
   MENTION
 }
 
@@ -143,35 +153,39 @@ model User {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  currentOrganization    Organization?            @relation("CurrentOrganization", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
-  credential             Credential?
-  profile                UserProfile?
-  abilities              UserAbility[]
-  organizationsOwned     Organization[]           @relation("OrganizationOwner")
-  memberships            OrganizationMembership[]
-  joinRequestsSent       JoinRequest[]            @relation("JoinRequestSender")
-  joinRequestsReceived   JoinRequest[]            @relation("JoinRequestRecipient")
-  requestedRoleChanges   RoleChangeRequest[]      @relation("RoleChangeRequester")
-  targetedRoleChanges    RoleChangeRequest[]      @relation("RoleChangeTarget")
-  reviewedRoleChanges    RoleChangeRequest[]      @relation("RoleChangeReviewer")
-  projectLeaveRequests   ProjectLeaveRequest[]    @relation("ProjectLeaveRequester")
-  reviewedLeaveRequests  ProjectLeaveRequest[]    @relation("ProjectLeaveReviewer")
-  teamMemberships        TeamMember[]
-  projectMemberships     ProjectMember[]
-  teamsLed               Team[]                   @relation("TeamLeader")
-  projectsOwned          Project[]                @relation("ProjectOwner")
-  tasksAssigned          Task[]                   @relation("TaskAssignee")
-  tasksReported          Task[]                   @relation("TaskReporter")
-  comments               Comment[]
-  attachments            Attachment[]
-  activityLogs           ActivityLog[]
-  notifications          Notification[]
-  requirementsCreated    Requirement[]            @relation("RequirementCreator")
-  requirementsApproved   Requirement[]            @relation("RequirementApprover")
-  requirementVersions    RequirementVersion[]     @relation("RequirementVersionCreator")
-  requirementChanges     RequirementChangeLog[]   @relation("RequirementChangeActor")
-  requirementDiscussions RequirementDiscussion[]  @relation("RequirementDiscussionAuthor")
-  requirementAttachments RequirementAttachment[]  @relation("RequirementAttachmentUploader")
+  currentOrganization     Organization?             @relation("CurrentOrganization", fields: [currentOrganizationId], references: [id], onDelete: SetNull)
+  credential              Credential?
+  profile                 UserProfile?
+  abilities               UserAbility[]
+  organizationsOwned      Organization[]            @relation("OrganizationOwner")
+  memberships             OrganizationMembership[]
+  joinRequestsSent        JoinRequest[]             @relation("JoinRequestSender")
+  joinRequestsReceived    JoinRequest[]             @relation("JoinRequestRecipient")
+  requestedRoleChanges    RoleChangeRequest[]       @relation("RoleChangeRequester")
+  targetedRoleChanges     RoleChangeRequest[]       @relation("RoleChangeTarget")
+  reviewedRoleChanges     RoleChangeRequest[]       @relation("RoleChangeReviewer")
+  projectLeaveRequests    ProjectLeaveRequest[]     @relation("ProjectLeaveRequester")
+  reviewedLeaveRequests   ProjectLeaveRequest[]     @relation("ProjectLeaveReviewer")
+  teamMemberships         TeamMember[]
+  projectMemberships      ProjectMember[]
+  teamsLed                Team[]                    @relation("TeamLeader")
+  projectsOwned           Project[]                 @relation("ProjectOwner")
+  tasksAssigned           Task[]                    @relation("TaskAssignee")
+  tasksReported           Task[]                    @relation("TaskReporter")
+  comments                Comment[]
+  attachments             Attachment[]
+  activityLogs            ActivityLog[]
+  notifications           Notification[]
+  requirementsCreated     Requirement[]             @relation("RequirementCreator")
+  requirementsApproved    Requirement[]             @relation("RequirementApprover")
+  requirementVersions     RequirementVersion[]      @relation("RequirementVersionCreator")
+  requirementChanges      RequirementChangeLog[]    @relation("RequirementChangeActor")
+  requirementDiscussions  RequirementDiscussion[]   @relation("RequirementDiscussionAuthor")
+  requirementAttachments  RequirementAttachment[]   @relation("RequirementAttachmentUploader")
+  reassignmentRequests    TaskReassignmentRequest[] @relation("ReassignmentRequester")
+  reassignmentFrom        TaskReassignmentRequest[] @relation("ReassignmentCurrentAssignee")
+  reassignmentSuggestions TaskReassignmentRequest[] @relation("ReassignmentSuggestedAssignee")
+  reassignmentReviews     TaskReassignmentRequest[] @relation("ReassignmentReviewer")
 
   @@index([currentOrganizationId])
   @@index([email, role])
@@ -201,19 +215,20 @@ model Organization {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  owner                User                     @relation("OrganizationOwner", fields: [ownerId], references: [id], onDelete: Restrict)
-  currentUsers         User[]                   @relation("CurrentOrganization")
-  memberships          OrganizationMembership[]
-  joinRequests         JoinRequest[]
-  roleChangeRequests   RoleChangeRequest[]
-  projectLeaveRequests ProjectLeaveRequest[]
-  teams                Team[]
-  projects             Project[]
-  tasks                Task[]
-  activityLogs         ActivityLog[]
-  notifications        Notification[]
-  documentEmbeddings   DocumentEmbedding[]
-  requirements         Requirement[]
+  owner                    User                      @relation("OrganizationOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  currentUsers             User[]                    @relation("CurrentOrganization")
+  memberships              OrganizationMembership[]
+  joinRequests             JoinRequest[]
+  roleChangeRequests       RoleChangeRequest[]
+  projectLeaveRequests     ProjectLeaveRequest[]
+  teams                    Team[]
+  projects                 Project[]
+  tasks                    Task[]
+  activityLogs             ActivityLog[]
+  notifications            Notification[]
+  documentEmbeddings       DocumentEmbedding[]
+  requirements             Requirement[]
+  taskReassignmentRequests TaskReassignmentRequest[]
 
   @@index([ownerId])
   @@index([name])
@@ -473,20 +488,51 @@ model Task {
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  project      Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  assignee     User?             @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
-  reporter     User              @relation("TaskReporter", fields: [reporterId], references: [id], onDelete: Restrict)
-  comments     Comment[]
-  attachments  Attachment[]
-  activities   ActivityLog[]
-  requirements TaskRequirement[]
+  organization         Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project              Project?                  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  assignee             User?                     @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  reporter             User                      @relation("TaskReporter", fields: [reporterId], references: [id], onDelete: Restrict)
+  comments             Comment[]
+  attachments          Attachment[]
+  activities           ActivityLog[]
+  requirements         TaskRequirement[]
+  reassignmentRequests TaskReassignmentRequest[]
 
   @@index([organizationId, status, priority])
   @@index([projectId, status])
   @@index([assigneeId, status])
   @@index([reporterId])
   @@index([deadline])
+}
+
+model TaskReassignmentRequest {
+  id                  String                        @id @default(cuid())
+  taskId              String
+  organizationId      String
+  requesterId         String
+  currentAssigneeId   String
+  suggestedAssigneeId String?
+  status              TaskReassignmentRequestStatus @default(PENDING)
+  reason              String
+  reviewNote          String?
+  aiConfidence        Int?
+  aiReason            String?
+  reviewedById        String?
+  reviewedAt          DateTime?
+  createdAt           DateTime                      @default(now())
+  updatedAt           DateTime                      @updatedAt
+
+  task              Task         @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requester         User         @relation("ReassignmentRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  currentAssignee   User         @relation("ReassignmentCurrentAssignee", fields: [currentAssigneeId], references: [id], onDelete: Restrict)
+  suggestedAssignee User?        @relation("ReassignmentSuggestedAssignee", fields: [suggestedAssigneeId], references: [id], onDelete: SetNull)
+  reviewedBy        User?        @relation("ReassignmentReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([taskId])
+  @@index([status])
+  @@index([organizationId, status, createdAt])
+  @@index([requesterId, status])
 }
 
 model Comment {
